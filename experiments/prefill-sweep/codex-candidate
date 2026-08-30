@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+subcommand="${1:?missing Codex subcommand}"
+shift
+
+exec "${ZIPCODE_BIN:-zip-code}" \
+  "$subcommand" \
+  -c 'model_providers.qwen38_local.base_url="http://127.0.0.1:8022/v1"' \
+  "$@"

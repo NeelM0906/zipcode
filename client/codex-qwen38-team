@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+echo "The team coding agent is now ZIPCODE." >&2
+echo "Install the current kit, open a new terminal, and type: zip-code" >&2
+exit 2

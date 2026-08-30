@@ -1,0 +1,13 @@
+[Unit]
+Description=ZIPCODE authenticated public inference edge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/absolute/path/to/ngrok http 8002 --url=https://replace-with-reserved-domain.example --traffic-policy-file=/absolute/path/to/traffic-policy.yml --log=stdout --log-format=logfmt
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

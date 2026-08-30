@@ -1,0 +1,294 @@
+name: qwen38-serve
+
+x-worker-common: &worker-common
+  image: ${SGLANG_IMAGE}
+  restart: unless-stopped
+  network_mode: host
+  ipc: host
+  shm_size: 32gb
+  ulimits:
+    memlock: -1
+  environment:
+    CUDA_DEVICE_ORDER: PCI_BUS_ID
+    SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN: "1"
+  volumes:
+    - ${QWEN38_MODEL_PATH:?set QWEN38_MODEL_PATH in .env}:/model:ro
+  entrypoint: ["python3", "-m", "sglang.launch_server"]
+  healthcheck:
+    test: ["CMD-SHELL", "python3 -c 'import os, urllib.request; urllib.request.urlopen(\"http://127.0.0.1:\" + os.environ[\"WORKER_PORT\"] + \"/health\", timeout=5).read()'"]
+    interval: 15s
+    timeout: 8s
+    retries: 12
+    start_period: 12m
+
+services:
+  gpu0:
+    <<: *worker-common
+    container_name: qwen38-gpu0
+    cpuset: "0-11,24-35"
+    environment:
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN: "1"
+      WORKER_PORT: "8010"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${QWEN38_GPU0_UUID:?set QWEN38_GPU0_UUID in .env}"]
+              capabilities: [gpu]
+    volumes:
+      - ${QWEN38_MODEL_PATH:?set QWEN38_MODEL_PATH in .env}:/model:ro
+      - ${QWEN38_CACHE_ROOT:?set QWEN38_CACHE_ROOT in .env}/gpu0:/root/.cache
+    command: &worker-command
+      - --model-path
+      - /model
+      - --served-model-name
+      - Qwen/Qwen3.8-27B-FP8
+      - --trust-remote-code
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8010"
+      - --tp-size
+      - "1"
+      - --dtype
+      - bfloat16
+      - --kv-cache-dtype
+      - fp8_e4m3
+      - --mamba-ssm-dtype
+      - float32
+      - --linear-attn-backend
+      - triton
+      - --attention-backend
+      - flashinfer
+      - --mamba-radix-cache-strategy
+      - extra_buffer_lazy
+      - --max-mamba-cache-size
+      - "32"
+      - --context-length
+      - "1000000"
+      - --json-model-override-args
+      - '{"text_config":{"rope_parameters":{"mrope_interleaved":true,"mrope_section":[11,11,10],"rope_type":"yarn","rope_theta":10000000,"partial_rotary_factor":0.25,"factor":4.0,"original_max_position_embeddings":262144}}}'
+      - --chunked-prefill-size
+      - "2048"
+      # Guarantee one decode round after every prefill chunk. This bounds
+      # streaming stalls under concurrent long-prompt Codex traffic.
+      - --prefill-decode-interval
+      - "1"
+      - --max-running-requests
+      - "8"
+      - --mem-fraction-static
+      - "0.90"
+      - --page-size
+      - "16"
+      - --load-format
+      - safetensors
+      - --cuda-graph-backend-decode
+      - full
+      - --cuda-graph-backend-prefill
+      - breakable
+      - --stream-interval
+      - "1"
+      - --random-seed
+      - "0"
+      - --reasoning-parser
+      - qwen3
+      - --tool-call-parser
+      - qwen3_coder
+      - --sampling-defaults
+      - model
+      - --default-chat-template-kwargs
+      - '{"enable_thinking":true,"preserve_thinking":true}'
+      - --speculative-algorithm
+      - EAGLE
+      - --speculative-num-steps
+      - "3"
+      - --speculative-eagle-topk
+      - "1"
+      - --speculative-num-draft-tokens
+      - "4"
+      - --enable-linear-replayssm-spec
+      - --enable-metrics
+      - --log-level
+      - info
+      - --log-level-http
+      - warning
+
+  gpu1:
+    <<: *worker-common
+    container_name: qwen38-gpu1
+    cpuset: "12-23,36-47"
+    environment:
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN: "1"
+      WORKER_PORT: "8011"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${QWEN38_GPU1_UUID:?set QWEN38_GPU1_UUID in .env}"]
+              capabilities: [gpu]
+    volumes:
+      - ${QWEN38_MODEL_PATH:?set QWEN38_MODEL_PATH in .env}:/model:ro
+      - ${QWEN38_CACHE_ROOT:?set QWEN38_CACHE_ROOT in .env}/gpu1:/root/.cache
+    command:
+      - --model-path
+      - /model
+      - --served-model-name
+      - Qwen/Qwen3.8-27B-FP8
+      - --trust-remote-code
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8011"
+      - --tp-size
+      - "1"
+      - --dtype
+      - bfloat16
+      - --kv-cache-dtype
+      - fp8_e4m3
+      - --mamba-ssm-dtype
+      - float32
+      - --linear-attn-backend
+      - triton
+      - --attention-backend
+      - flashinfer
+      - --mamba-radix-cache-strategy
+      - extra_buffer_lazy
+      - --max-mamba-cache-size
+      - "32"
+      - --context-length
+      - "1000000"
+      - --json-model-override-args
+      - '{"text_config":{"rope_parameters":{"mrope_interleaved":true,"mrope_section":[11,11,10],"rope_type":"yarn","rope_theta":10000000,"partial_rotary_factor":0.25,"factor":4.0,"original_max_position_embeddings":262144}}}'
+      - --chunked-prefill-size
+      - "2048"
+      # Keep the same decode-fair scheduling cadence on both replicas.
+      - --prefill-decode-interval
+      - "1"
+      - --max-running-requests
+      - "8"
+      - --mem-fraction-static
+      - "0.90"
+      - --page-size
+      - "16"
+      - --load-format
+      - safetensors
+      - --cuda-graph-backend-decode
+      - full
+      - --cuda-graph-backend-prefill
+      - breakable
+      - --stream-interval
+      - "1"
+      - --random-seed
+      - "0"
+      - --reasoning-parser
+      - qwen3
+      - --tool-call-parser
+      - qwen3_coder
+      - --sampling-defaults
+      - model
+      - --default-chat-template-kwargs
+      - '{"enable_thinking":true,"preserve_thinking":true}'
+      - --speculative-algorithm
+      - EAGLE
+      - --speculative-num-steps
+      - "3"
+      - --speculative-eagle-topk
+      - "1"
+      - --speculative-num-draft-tokens
+      - "4"
+      - --enable-linear-replayssm-spec
+      - --enable-metrics
+      - --log-level
+      - info
+      - --log-level-http
+      - warning
+
+  router:
+    image: ${SGLANG_IMAGE}
+    container_name: qwen38-router
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ${QWEN38_MODEL_PATH:?set QWEN38_MODEL_PATH in .env}:/model:ro
+    depends_on:
+      gpu0:
+        condition: service_healthy
+      gpu1:
+        condition: service_healthy
+    entrypoint: ["python3", "-m", "sglang_router.launch_router"]
+    command:
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8003"
+      - --worker-urls
+      - http://127.0.0.1:8010
+      - http://127.0.0.1:8011
+      - --policy
+      - cache_aware
+      # With two replicas that each admit eight requests, the router default
+      # absolute imbalance threshold of 64 can pin a shared Codex prefix to one
+      # worker. Rebalance as soon as active-request counts differ.
+      - --balance-abs-threshold
+      - "0"
+      - --balance-rel-threshold
+      - "1.25"
+      - --max-concurrent-requests
+      - "16"
+      - --queue-size
+      - "256"
+      - --queue-timeout-secs
+      - "86400"
+      - --request-timeout-secs
+      - "86400"
+      - --health-check-endpoint
+      - /health
+      - --prometheus-host
+      - 127.0.0.1
+      - --prometheus-port
+      - "29000"
+      - --log-level
+      - info
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8003/health\", timeout=5).read()'"]
+      interval: 15s
+      timeout: 8s
+      retries: 12
+
+  codex-gateway:
+    image: ${SGLANG_IMAGE}
+    container_name: qwen38-codex-gateway
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      router:
+        condition: service_healthy
+    environment:
+      QWEN_CODEX_UPSTREAM: http://127.0.0.1:8003
+      QWEN_CODEX_MODEL: Qwen/Qwen3.8-27B-FP8
+      QWEN_CODEX_MODEL_CACHE: /gateway/models_cache.json
+      QWEN_CODEX_LOG_LEVEL: info
+    volumes:
+      - ../../gateway/codex_gateway.py:/gateway/codex_gateway.py:ro
+      - ../../client/models.json:/gateway/models_cache.json:ro
+    working_dir: /gateway
+    entrypoint: ["python3", "-m", "uvicorn"]
+    command:
+      - codex_gateway:app
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8012"
+      - --workers
+      - "1"
+      - --no-access-log
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8012/health\", timeout=5).read()'"]
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 15s

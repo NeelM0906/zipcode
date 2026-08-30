@@ -1,0 +1,39 @@
+.env
+.env.*
+!.env.example
+
+# Credentials and private edge policy
+credential
+team-credential
+*.token
+*.key
+*.pem
+deploy/ngrok/traffic-policy.yml
+
+# Local runtime state
+.zipcode/
+*.sqlite
+*.sqlite-*
+*.db
+*.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+venvs/
+
+# Models, caches, generated runs, and local build trees
+models/
+cache/
+caches/
+src/
+benchmarks/runs/
+experiments/**/workdirs/
+experiments/**/raw/
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*~

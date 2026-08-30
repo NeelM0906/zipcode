@@ -1,0 +1,17 @@
+model = "Qwen/Qwen3.8-27B-FP8"
+model_provider = "qwen38_remote"
+model_context_window = 1000000
+model_auto_compact_token_limit = 850000
+model_reasoning_effort = "xhigh"
+model_reasoning_summary = "none"
+
+[features]
+apps = false
+browser_use = false
+computer_use = false
+image_generation = false
+multi_agent = false
+plugins = false
+
+[mcp_servers.railway]
+enabled = false

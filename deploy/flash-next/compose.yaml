@@ -1,0 +1,192 @@
+name: qwen38-flash-next-canary
+
+services:
+  model:
+    image: ${FLASH_NEXT_IMAGE}
+    container_name: qwen38-flash-next-gpu1
+    restart: "no"
+    network_mode: host
+    ipc: host
+    shm_size: 64gb
+    ulimits:
+      memlock: -1
+    environment:
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      PYTHONPATH: /opt/sglang-src/python
+      SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN: "1"
+      TORCH_CUDA_ARCH_LIST: "12.0"
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      TOKENIZERS_PARALLELISM: "false"
+      HF_HOME: /cache/huggingface
+      XDG_CACHE_HOME: /cache
+      TORCH_HOME: /cache/torch
+      TORCHINDUCTOR_CACHE_DIR: /cache/torchinductor
+      TRITON_CACHE_DIR: /cache/triton
+      CUDA_CACHE_PATH: /cache/cuda
+      FLASHINFER_WORKSPACE_BASE: /cache/flashinfer
+      SGLANG_CACHE_DIR: /cache/sglang
+      SGLANG_JIT_CACHE_DIR: /cache/sglang/jit
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${FLASH_NEXT_GPU_UUID}"]
+              capabilities: [gpu]
+    volumes:
+      - ${FLASH_NEXT_MODEL_PATH:?set FLASH_NEXT_MODEL_PATH in .env}:/model:ro
+      - ${FLASH_NEXT_SGLANG_PATH:?set FLASH_NEXT_SGLANG_PATH in .env}:/opt/sglang-src:ro
+      - ${FLASH_NEXT_CACHE_ROOT:?set FLASH_NEXT_CACHE_ROOT in .env}:/cache
+    entrypoint: ["python3", "-m", "sglang.launch_server"]
+    command:
+      - --model-path
+      - /model
+      - --load-format
+      - safetensors
+      - --served-model-name
+      - qwen-codex-flash-next
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8020"
+      - --tp
+      - "1"
+      - --dtype
+      - bfloat16
+      - --quantization
+      - modelopt_fp4
+      - --kv-cache-dtype
+      - fp8_e4m3
+      - --mem-fraction-static
+      - "0.981"
+      - --context-length
+      - "524288"
+      - --json-model-override-args
+      - '{"text_config":{"rope_parameters":{"mrope_interleaved":true,"mrope_section":[11,11,10],"rope_type":"yarn","rope_theta":10000000,"partial_rotary_factor":0.25,"factor":2.0,"original_max_position_embeddings":262144}}}'
+      - --page-size
+      - "64"
+      - --max-running-requests
+      - "4"
+      - --sleep-on-idle
+      - --chunked-prefill-size
+      - "4096"
+      - --mamba-radix-cache-strategy
+      - extra_buffer
+      - --mamba-ssm-dtype
+      - bfloat16
+      - --max-mamba-cache-size
+      - "24"
+      - --gdn-mtp-cache-mode
+      - none
+      - --linear-attn-decode-backend
+      - flashinfer
+      - --linear-attn-prefill-backend
+      - flashinfer
+      - --mamba-track-interval
+      - "64"
+      - --ple-offload-embedding
+      - --trust-remote-code
+      - --chat-template
+      - /model/chat_template.jinja
+      - --reasoning-parser
+      - qwen3
+      - --tool-call-parser
+      - qwen3_coder
+      - --default-chat-template-kwargs
+      - '{"enable_thinking":true,"preserve_thinking":true,"reasoning_effort":"medium"}'
+      - --speculative-algorithm
+      - NEXTN
+      - --speculative-num-steps
+      - "3"
+      - --speculative-eagle-topk
+      - "1"
+      - --speculative-num-draft-tokens
+      - "4"
+      - --speculative-draft-model-quantization
+      - unquant
+      - --enable-request-time-stats-logging
+      - --enable-metrics
+      - --watchdog-timeout
+      - "1800"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8020/health\", timeout=5).read()'"]
+      interval: 15s
+      timeout: 8s
+      retries: 80
+      start_period: 20m
+
+  codex-gateway:
+    image: ${GATEWAY_IMAGE}
+    container_name: qwen38-flash-next-codex-gateway
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      model:
+        condition: service_healthy
+    environment:
+      QWEN_CODEX_UPSTREAM: http://127.0.0.1:8020
+      QWEN_CODEX_MODEL: qwen-codex-flash-next
+      QWEN_CODEX_MODEL_CACHE: /gateway/models_cache.json
+      QWEN_CODEX_DISPLAY_NAME: Qwen3.8 Flash-Next NVFP4 (local)
+      QWEN_CODEX_DESCRIPTION: Local Qwen3.8 Flash-Next NVFP4 coding agent; 524K qualified canary.
+      QWEN_CODEX_CONTEXT_WINDOW: "524288"
+      QWEN_CODEX_EFFECTIVE_CONTEXT_PERCENT: "85"
+      QWEN_CODEX_IDENTITY: the local Qwen3.8 Flash-Next model
+      QWEN_CODEX_LOG_LEVEL: info
+    volumes:
+      - ../../gateway/codex_gateway.py:/gateway/codex_gateway.py:ro
+      - ../../client/models.json:/gateway/models_cache.json:ro
+    working_dir: /gateway
+    entrypoint: ["python3", "-m", "uvicorn"]
+    command:
+      - codex_gateway:app
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8022"
+      - --workers
+      - "1"
+      - --no-access-log
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8022/health\", timeout=5).read()'"]
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 15s
+
+  model-mux:
+    image: ${GATEWAY_IMAGE}
+    container_name: qwen38-team-model-mux
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      codex-gateway:
+        condition: service_healthy
+    environment:
+      FLASH_MODEL: qwen-codex-flash-next
+      FLASH_ALIAS: Qwen/Qwen3.8-Flash-Next
+      FLASH_UPSTREAM: http://127.0.0.1:8022
+      FULL_MODEL: Qwen/Qwen3.8-27B-FP8
+      FULL_ALIAS: Qwen/Qwen3.8-27B-FP8
+      FULL_UPSTREAM: http://127.0.0.1:8012
+      SETUP_SCRIPT_PATH: /mux/zip-code-setup.sh
+    volumes:
+      - ../../gateway/model_mux.py:/mux/model_mux.py:ro
+      - ../../client/zip-code-setup.sh:/mux/zip-code-setup.sh:ro
+    working_dir: /mux
+    entrypoint: ["python3", "-m", "uvicorn"]
+    command:
+      - model_mux:app
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8002"
+      - --workers
+      - "1"
+      - --no-access-log
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8002/health\", timeout=5).read()'"]
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 15s

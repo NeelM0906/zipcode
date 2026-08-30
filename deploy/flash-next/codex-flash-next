@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! curl -fsS --max-time 5 http://127.0.0.1:8022/health >/dev/null; then
+  echo "Local Qwen3.8 Flash-Next Codex gateway is unavailable." >&2
+  echo "Start it with: $(dirname "$0")/activate-gpu1-canary.sh" >&2
+  exit 1
+fi
+
+exec codex --profile flash-next \
+  -c "model_catalog_json=\"$(cd -- "$(dirname -- "$0")/../.." && pwd)/client/models.json\"" \
+  "$@"

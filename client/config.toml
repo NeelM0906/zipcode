@@ -1,0 +1,24 @@
+model = "Qwen/Qwen3.8-Flash-Next"
+model_provider = "zipcode_team"
+model_reasoning_effort = "xhigh"
+model_reasoning_summary = "none"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[model_providers.zipcode_team]
+name = "ZIPCODE Private Coding Cloud"
+base_url = "https://olympustest.ngrok.pro/v1"
+env_key = "ZIPCODE_API_KEY"
+env_key_instructions = "Ask the ZIPCODE operator for your private team credential. Keep it out of config files and shell history."
+wire_api = "responses"
+request_max_retries = 2
+stream_max_retries = 2
+stream_idle_timeout_ms = 1800000
+
+[features]
+apps = false
+browser_use = false
+computer_use = false
+image_generation = false
+multi_agent = false
+plugins = false

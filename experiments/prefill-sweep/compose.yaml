@@ -1,0 +1,138 @@
+name: qwen38-prefill-experiment
+
+services:
+  gpu1-candidate:
+    image: ${SGLANG_IMAGE}
+    container_name: qwen38-prefill-gpu1
+    network_mode: host
+    ipc: host
+    shm_size: 32gb
+    cpuset: "12-23,36-47"
+    ulimits:
+      memlock: -1
+    environment:
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN: "1"
+      WORKER_PORT: "8021"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${QWEN38_GPU_UUID:?set QWEN38_GPU_UUID in .env}"]
+              capabilities: [gpu]
+    volumes:
+      - ${QWEN38_MODEL_PATH:?set QWEN38_MODEL_PATH in .env}:/model:ro
+      - ${QWEN38_CACHE_ROOT:?set QWEN38_CACHE_ROOT in .env}/gpu1:/root/.cache
+    entrypoint: ["python3", "-m", "sglang.launch_server"]
+    command:
+      - --model-path
+      - /model
+      - --served-model-name
+      - Qwen/Qwen3.8-27B-FP8
+      - --trust-remote-code
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8021"
+      - --tp-size
+      - "1"
+      - --dtype
+      - bfloat16
+      - --kv-cache-dtype
+      - fp8_e4m3
+      - --mamba-ssm-dtype
+      - float32
+      - --linear-attn-backend
+      - triton
+      - --attention-backend
+      - flashinfer
+      - --mamba-radix-cache-strategy
+      - extra_buffer_lazy
+      - --max-mamba-cache-size
+      - "32"
+      - --context-length
+      - "1000000"
+      - --json-model-override-args
+      - '{"text_config":{"rope_parameters":{"mrope_interleaved":true,"mrope_section":[11,11,10],"rope_type":"yarn","rope_theta":10000000,"partial_rotary_factor":0.25,"factor":4.0,"original_max_position_embeddings":262144}}}'
+      - --chunked-prefill-size
+      - "${CHUNK_SIZE:-8192}"
+      - --prefill-decode-interval
+      - "${PREFILL_DECODE_INTERVAL:-0}"
+      - --max-running-requests
+      - "8"
+      - --mem-fraction-static
+      - "0.90"
+      - --page-size
+      - "16"
+      - --load-format
+      - safetensors
+      - --cuda-graph-backend-decode
+      - full
+      - --cuda-graph-backend-prefill
+      - breakable
+      - --stream-interval
+      - "1"
+      - --random-seed
+      - "0"
+      - --reasoning-parser
+      - qwen3
+      - --tool-call-parser
+      - qwen3_coder
+      - --sampling-defaults
+      - model
+      - --default-chat-template-kwargs
+      - '{"enable_thinking":true,"preserve_thinking":true}'
+      - --speculative-algorithm
+      - EAGLE
+      - --speculative-num-steps
+      - "3"
+      - --speculative-eagle-topk
+      - "1"
+      - --speculative-num-draft-tokens
+      - "4"
+      - --enable-linear-replayssm-spec
+      - --enable-metrics
+      - --log-level
+      - info
+      - --log-level-http
+      - warning
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8021/health\", timeout=5).read()'"]
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 12m
+
+  codex-gateway-candidate:
+    image: ${SGLANG_IMAGE}
+    container_name: qwen38-prefill-codex-gateway
+    network_mode: host
+    depends_on:
+      gpu1-candidate:
+        condition: service_healthy
+    environment:
+      QWEN_CODEX_UPSTREAM: http://127.0.0.1:8021
+      QWEN_CODEX_MODEL: Qwen/Qwen3.8-27B-FP8
+      QWEN_CODEX_MODEL_CACHE: /gateway/models_cache.json
+      QWEN_CODEX_LOG_LEVEL: info
+    volumes:
+      - ../../gateway/codex_gateway.py:/gateway/codex_gateway.py:ro
+      - ../../client/models.json:/gateway/models_cache.json:ro
+    working_dir: /gateway
+    entrypoint: ["python3", "-m", "uvicorn"]
+    command:
+      - codex_gateway:app
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8022"
+      - --workers
+      - "1"
+      - --no-access-log
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8022/health\", timeout=5).read()'"]
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 15s

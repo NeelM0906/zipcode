@@ -1,0 +1,33 @@
+{
+  "date": "2026-08-27",
+  "endpoint": "http://127.0.0.1:8010/generate",
+  "request": {
+    "input_token_id": 1000,
+    "input_token_count": 999900,
+    "sampling_params": {
+      "max_new_tokens": 1,
+      "temperature": 0,
+      "ignore_eos": true
+    }
+  },
+  "result": {
+    "ok": true,
+    "wall_seconds": 1583.527,
+    "prompt_tokens": 999900,
+    "completion_tokens": 1,
+    "output_ids": [
+      1000
+    ],
+    "finish_reason": {
+      "type": "length",
+      "length": 1
+    },
+    "num_retractions": 0,
+    "queue_time_seconds": 0.0007967948913574219,
+    "e2e_latency_seconds": 1583.4901554220123
+  },
+  "postcondition": {
+    "synthetic_prefix_cache_flushed": true,
+    "flush_http_status": 200
+  }
+}

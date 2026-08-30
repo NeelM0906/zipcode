@@ -1,0 +1,97 @@
+groups:
+  - name: qwen38-serving
+    rules:
+      - alert: QwenWorkerDown
+        expr: up{job="qwen-worker"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Qwen worker {{ $labels.replica }} is down"
+          description: "Prometheus has failed to scrape {{ $labels.instance }} for 30 seconds."
+
+      - alert: QwenCodexGatewayDown
+        expr: up{job="qwen-codex-gateway"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Codex compatibility gateway is down"
+
+      - alert: QwenRouterDown
+        expr: up{job="qwen-router"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "SGLang model gateway router is down"
+
+      - alert: QwenQueueBacklog
+        expr: sum(sglang:num_queue_reqs) > 4
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Qwen request queue is persistently above four"
+
+      - alert: QwenQueueCritical
+        expr: sum(sglang:num_queue_reqs) > 16
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Qwen request queue exceeds the fast-service capacity"
+
+      - alert: QwenKVPoolPressure
+        expr: max(sglang:token_usage) > 0.90
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A Qwen worker KV pool is over 90 percent utilized"
+
+      - alert: QwenP95TTFTSlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(sglang:time_to_first_token_seconds_bucket{is_streaming="true"}[5m]))) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Five-minute p95 streaming TTFT exceeds two seconds"
+
+      - alert: QwenAbortedRequests
+        expr: increase(sglang:num_aborted_requests_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Qwen aborted one or more requests in the last five minutes"
+
+      - alert: QwenLowSpeculativeAcceptance
+        expr: avg(sglang:spec_accept_rate) < 0.25 and sum(rate(sglang:spec_verify_calls_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Speculative acceptance is below 25 percent under active load"
+
+      - alert: QwenGateway5xx
+        expr: increase(qwen_codex_gateway_requests_total{status=~"5.."}[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Codex gateway returned a 5xx response"
+
+      - alert: QwenGPUExporterDown
+        expr: up{job="qwen-gpu"} == 0 or qwen_gpu_exporter_up == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "NVIDIA GPU telemetry is unavailable"
+
+      - alert: QwenGPUHot
+        expr: max(qwen_gpu_temperature_celsius) > 85
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "An inference GPU is hotter than 85 C"
