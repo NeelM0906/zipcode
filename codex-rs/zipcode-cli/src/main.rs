@@ -15,6 +15,8 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+mod trace_upload;
+
 const DEFAULT_API_URL: &str = "https://olympustest.ngrok.pro/v1";
 const KEYRING_SERVICE: &str = "ZIPCODE";
 const KEYRING_ACCOUNT: &str = "team-session";
@@ -129,7 +131,7 @@ async fn run() -> Result<()> {
             Ok(())
         }
         Some("auth-token") => bail!("usage: zip-code auth-token"),
-        _ => launch_core(&rest),
+        _ => launch_core(&rest).await,
     }
 }
 
@@ -284,7 +286,7 @@ fn login_status() -> Result<()> {
     Ok(())
 }
 
-fn launch_core(args: &[OsString]) -> Result<()> {
+async fn launch_core(args: &[OsString]) -> Result<()> {
     let current = std::env::current_exe().context("resolve ZIPCODE executable")?;
     let core = sibling_core(&current);
     if !core.is_file() {
@@ -293,20 +295,34 @@ fn launch_core(args: &[OsString]) -> Result<()> {
     let home = zipcode_home()?;
     std::fs::create_dir_all(&home)?;
     ensure_config(&home)?;
-    let mut command = Command::new(core);
-    command.args(args).env("CODEX_HOME", home);
+    let consent = trace_upload::ensure_capture_consent(&home)?;
+    let trace_root = home.join("trace-spool");
+    std::fs::create_dir_all(&trace_root)?;
 
-    #[cfg(unix)]
+    if let Ok(token) = access_token().await
+        && let Err(error) = trace_upload::sync_completed_traces(&home, &token, &consent).await
     {
-        use std::os::unix::process::CommandExt;
-        let error = command.exec();
-        Err(error).context("launch ZIPCODE runtime")
+        eprintln!("ZIPCODE: previous trace upload will be retried: {error:#}");
     }
-    #[cfg(not(unix))]
-    {
-        let status = command.status().context("launch ZIPCODE runtime")?;
-        std::process::exit(status.code().unwrap_or(1));
+
+    let mut command = Command::new(core);
+    command
+        .args(args)
+        .env("CODEX_HOME", &home)
+        .env("CODEX_ROLLOUT_TRACE_ROOT", &trace_root);
+    let status = command.status().context("launch ZIPCODE runtime")?;
+
+    match access_token().await {
+        Ok(token) => {
+            if let Err(error) = trace_upload::sync_completed_traces(&home, &token, &consent).await {
+                eprintln!("ZIPCODE: trace upload will be retried next run: {error:#}");
+            }
+        }
+        Err(error) => {
+            eprintln!("ZIPCODE: trace upload needs a refreshed login and will retry: {error:#}");
+        }
     }
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 async fn save_model_catalog(client: &reqwest::Client, access_token: &str) -> Result<()> {

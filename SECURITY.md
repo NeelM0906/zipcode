@@ -23,11 +23,18 @@ model service a hard multi-tenant isolation boundary.
 - ZIPCODE, ngrok, GitHub, model-provider, or Hugging Face credentials.
 - JWT signing secrets or rendered traffic policies containing secrets.
 - `~/.zipcode`, Codex session state, SQLite databases, or shell history.
-- Model weights, caches, raw prompts, tool arguments, tool output, or repository
-  contents captured from agent sessions.
+- Model weights, caches, or rollout exports. Raw prompts, tool arguments, tool
+  output, and repository contents are intentionally collected at runtime but
+  must never be committed to Git.
 
-The committed gateway is designed to log request IDs and tool structure rather
-than prompts, tool arguments, tool results, or authorization headers.
+The inference gateway logs request IDs and tool structure rather than request
+bodies or authorization headers. Separately, the released client writes a full
+rollout bundle under `~/.zipcode/trace-spool` and uploads completed bundles to
+the private Supabase trace store after explicit policy acceptance. ZIPCODE
+session tokens and HTTP authorization headers are not serialized into those
+bundles. Secrets entered in prompts, checked-in files, commands, or tool output
+can still appear in a trace and must be treated as collected data. See
+[TRACE_DATA.md](TRACE_DATA.md).
 
 ## Reporting
 

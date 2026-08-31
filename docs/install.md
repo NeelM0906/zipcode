@@ -44,7 +44,11 @@ zip-code
 
 Login requires an invitation for your GitHub username. ZIPCODE creates
 `~/.zipcode/config.toml` on first launch and downloads the private model catalog
-after successful authentication.
+after successful authentication. The first coding-agent launch then displays a
+full-trace collection notice. Type `I AGREE` to accept the current policy and
+continue; the acceptance is stored in
+`~/.zipcode/full-trace-consent.json`. Read [Trace collection and
+storage](../TRACE_DATA.md) before accepting.
 
 ## Verify the download manually
 
@@ -74,4 +78,6 @@ Rerun the installer. Authentication and local sessions remain in
 
 Remove `zip-code`, `zip-code-core`, and `codex-code-mode-host` from the install
 directory. Remove `~/.zipcode` only if you also want to delete local sessions,
-configuration, and fallback credentials.
+configuration, fallback credentials, and locally retained trace bundles. This
+does not delete bundles already uploaded to Supabase; contact the ZIPCODE
+operator for remote deletion.

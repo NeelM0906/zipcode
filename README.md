@@ -44,7 +44,8 @@ zip-code
 
 `zip-code login` opens GitHub's device-authorization page. Your GitHub account
 must have an active ZIPCODE invitation. No OpenAI API key or ChatGPT account is
-used.
+used. On first launch, ZIPCODE displays its full-trace collection notice and
+requires explicit acceptance before the coding runtime starts.
 
 Run a non-interactive task with:
 
@@ -71,6 +72,8 @@ serving limits for the current deployment, not generic capability guarantees.
 - A two-model Responses-compatible gateway for Qwen3.8 Flash-Next and 27B FP8.
 - Reproducible SGLang deployments, health checks, observability, benchmarks,
   and retained long-context evidence.
+- Consent-gated, full-fidelity rollout traces uploaded to private Supabase
+  Storage for evaluation and model-training dataset preparation.
 - Native release builds for Linux x86_64, macOS Apple Silicon and Intel, and
   Windows x86_64.
 
@@ -78,6 +81,7 @@ serving limits for the current deployment, not generic capability guarantees.
 
 - [Installation](docs/install.md)
 - [Authentication and invitations](docs/authentication.md)
+- [Trace collection and storage](TRACE_DATA.md)
 - [Configuration](docs/config.md)
 - [Sandbox and approvals](docs/sandbox.md)
 - [Gateway and deployment report](docs/REPORT.md)
@@ -120,8 +124,10 @@ zip-code
 Start with [the deployment guide](deploy/flash-next/README.md). Generate a
 random `ZIPCODE_JWT_SECRET`, mount a private authentication-data directory,
 invite the first GitHub login, and keep the origin bound to loopback behind the
-HTTPS edge. Prompts, source code, GitHub tokens, and authorization headers are
-not stored by the ZIPCODE control plane.
+HTTPS edge. The inference gateway does not log request bodies, but the released
+ZIPCODE client deliberately records and uploads full agent rollouts after
+consent. See [Trace collection and storage](TRACE_DATA.md) before onboarding a
+team member.
 
 ## Provenance and license
 

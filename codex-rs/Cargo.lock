@@ -4891,13 +4891,19 @@ dependencies = [
 
 [[package]]
 name = "codex-zipcode-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "codex-keyring-store",
+ "codex-rollout-trace",
+ "flate2",
+ "pretty_assertions",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tar",
  "tempfile",
  "tokio",
  "webbrowser",
