@@ -101,6 +101,7 @@ members = [
     "websocket-client",
     "worktree",
     "workload-identity",
+    "zipcode-cli",
     "utils/absolute-path",
     "utils/audio",
     "utils/path-uri",

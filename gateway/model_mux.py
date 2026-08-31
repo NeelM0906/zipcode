@@ -17,6 +17,11 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
+try:
+    from .auth import authenticate_request, router as auth_router
+except ImportError:
+    from auth import authenticate_request, router as auth_router
+
 
 FLASH_MODEL = os.environ.get("FLASH_MODEL", "qwen-codex-flash-next")
 FLASH_ALIAS = os.environ.get("FLASH_ALIAS", "Qwen/Qwen3.8-Flash-Next")
@@ -45,6 +50,7 @@ CATALOG_ROUTES = (
 )
 
 app = FastAPI(title="ZIPCODE private model gateway", version="2.0.0")
+app.include_router(auth_router)
 client: httpx.AsyncClient | None = None
 
 
@@ -79,7 +85,7 @@ def _brand_catalog_entry(
 
 
 def _forward_headers(request: Request) -> dict[str, str]:
-    excluded = {"host", "content-length", "connection", "transfer-encoding"}
+    excluded = {"host", "content-length", "connection", "transfer-encoding", "authorization"}
     return {key: value for key, value in request.headers.items() if key.lower() not in excluded}
 
 
@@ -135,6 +141,7 @@ async def health() -> JSONResponse:
 
 @app.get("/v1/models")
 async def models(request: Request) -> JSONResponse:
+    authenticate_request(request)
     assert client is not None
     codex_catalog = bool(request.query_params.get("client_version"))
     combined: list[dict] = []
@@ -197,6 +204,7 @@ async def setup_script_sha256() -> PlainTextResponse:
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def proxy(path: str, request: Request) -> Response:
     assert client is not None
+    authenticate_request(request)
     body = await request.body()
     model = None
     if body and request.headers.get("content-type", "").startswith("application/json"):

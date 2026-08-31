@@ -1,10 +1,3 @@
-# Render this to traffic-policy.yml outside source control. Replace the
-# placeholder with the pilot credential through a secret-aware deployment step.
-on_http_request:
-  - name: require-bearer
-    expressions:
-      - "!('authorization' in req.headers) || req.headers['authorization'][0] != 'Bearer REPLACE_OUTSIDE_GIT'"
-    actions:
-      - type: deny
-        config:
-          status_code: 401
+# Authentication is enforced at the origin. The GitHub device-flow endpoints
+# must remain reachable before a user has a ZIPCODE bearer token.
+on_http_request: []

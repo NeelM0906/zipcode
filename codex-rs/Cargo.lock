@@ -2384,7 +2384,7 @@ dependencies = [
 
 [[package]]
 name = "codex-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "app_test_support",
@@ -4418,7 +4418,7 @@ dependencies = [
 
 [[package]]
 name = "codex-tui"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "app_test_support",
@@ -4887,6 +4887,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "codex-zipcode-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "codex-keyring-store",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "webbrowser",
 ]
 
 [[package]]

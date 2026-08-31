@@ -27,10 +27,11 @@ venvs/
 models/
 cache/
 caches/
-src/
+/src/
 benchmarks/runs/
 experiments/**/workdirs/
 experiments/**/raw/
+dist/
 
 # Editor and OS files
 .DS_Store

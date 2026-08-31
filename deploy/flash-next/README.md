@@ -17,3 +17,42 @@ The canary uses GPU UUID `GPU-472867f8-ccad-ec82-d962-5adbbbec83fb`, port
 port 8002 for the public two-model mux.
 `activate-gpu1-canary.sh` drains only the existing GPU 1 replica and restores it
 automatically if the canary cannot become healthy within 30 minutes.
+
+## Configure
+
+Copy `.env.example` to `.env`, then set the model, source, cache, and GPU UUID
+paths for this host. Create a private authentication directory owned by the
+UID/GID configured in `.env`:
+
+```bash
+install -d -m 700 /absolute/path/to/zipcode-auth-data
+openssl rand -hex 32
+```
+
+Put the generated value in `ZIPCODE_JWT_SECRET` and set
+`ZIPCODE_AUTH_DATA_PATH` to the private directory. Keep `.env` out of version
+control. The dedicated gateway image is built from `gateway/Dockerfile`; only
+the model service uses the pinned SGLang image.
+
+## Start and invite
+
+```bash
+docker compose build codex-gateway model-mux
+docker compose up -d
+docker compose exec model-mux python /mux/invitations.py invite NeelM0906
+docker compose ps
+curl --fail http://127.0.0.1:8002/health
+```
+
+The origin binds only to loopback. Put an HTTPS edge in front of port 8002 and
+let the origin enforce the short-lived ZIPCODE bearer tokens. Do not add a
+second fixed bearer credential at the edge; it would block device-login and
+token-refresh endpoints. The example in `deploy/ngrok` passes traffic through
+for origin authentication.
+
+Manage access with the same container command:
+
+```bash
+docker compose exec model-mux python /mux/invitations.py list
+docker compose exec model-mux python /mux/invitations.py revoke GITHUB_LOGIN
+```

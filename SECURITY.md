@@ -1,17 +1,27 @@
 # Security
 
-## Pilot limitations
+## Authentication boundary
 
-The current deployment uses one shared pilot bearer at the HTTPS edge. A leaked
-credential requires team-wide rotation, and requests are not attributable to
-individual users. Before broader deployment, replace it with per-user or
-per-service short-lived credentials, revocation, rate limits, quotas, request
-accounting, and auditable identities that do not log prompts or source code.
+ZIPCODE uses GitHub device authorization to establish identity. The service
+accepts only invited GitHub logins, issues 15-minute signed access tokens, and
+rotates opaque refresh tokens. Revoking an invitation immediately blocks new
+requests and invalidates refresh sessions. GitHub access tokens are checked
+during exchange and are never stored by ZIPCODE.
+
+The client keeps its ZIPCODE session in the operating-system credential store
+when available, with a mode-0600 `~/.zipcode/auth.json` fallback. The gateway
+stores only SHA-256 hashes of refresh tokens. Set `ZIPCODE_JWT_SECRET` to at
+least 32 random bytes and keep the SQLite authentication database outside the
+repository.
+
+Rate limits and quotas are deployment concerns and should be enabled at the
+edge before admitting untrusted users. Authentication does not make a shared
+model service a hard multi-tenant isolation boundary.
 
 ## Never commit
 
 - ZIPCODE, ngrok, GitHub, model-provider, or Hugging Face credentials.
-- Rendered traffic policies containing a bearer value.
+- JWT signing secrets or rendered traffic policies containing secrets.
 - `~/.zipcode`, Codex session state, SQLite databases, or shell history.
 - Model weights, caches, raw prompts, tool arguments, tool output, or repository
   contents captured from agent sessions.
