@@ -1,0 +1,2 @@
+-- ZIPCODE does not seed trace data. Production records arrive through the
+-- authenticated zipcode-trace-ingest Edge Function.
