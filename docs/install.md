@@ -21,7 +21,7 @@ Pin a release instead of installing the latest:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NeelM0906/zipcode/main/install.sh \
-  | ZIPCODE_VERSION=v0.1.0 sh
+  | ZIPCODE_VERSION=v0.2.0 sh
 ```
 
 ## Windows
