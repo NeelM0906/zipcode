@@ -22,6 +22,9 @@ test logs below `runs/`. Important fields include success rate, wall time,
 per-task latency, Codex token usage, prefix-cache reuse, and deltas from both
 SGLang workers and the compatibility gateway.
 
+The benchmark collector follows the live two-replica deployment: workers on
+ports 8010 and 8020, Codex gateways on 8012 and 8022, and the router on 29000.
+
 Because the profile uses sampling and `xhigh` reasoning, trajectory length is
 stochastic. Repeat each concurrency point before making capacity decisions;
 compare correctness and median latency separately from makespan and aggregate

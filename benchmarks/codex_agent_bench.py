@@ -24,8 +24,9 @@ FIXTURE = ROOT / "fixture" / "agent_fixture"
 DEFAULT_RUNS = ROOT / "runs"
 METRIC_URLS = (
     "http://127.0.0.1:8010/metrics",
-    "http://127.0.0.1:8011/metrics",
-    "http://127.0.0.1:8002/metrics",
+    "http://127.0.0.1:8020/metrics",
+    "http://127.0.0.1:8012/metrics",
+    "http://127.0.0.1:8022/metrics",
     "http://127.0.0.1:29000/metrics",
 )
 COUNTER_PREFIXES = (
