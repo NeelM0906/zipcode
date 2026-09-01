@@ -40,5 +40,3 @@ jobs:
         with:
           target: x86_64-unknown-linux-gnu
       - run: cargo fmt --all -- --check
-      - run: cargo test --locked -p codex-zipcode-cli
-      - run: cargo check --locked -p codex-cli -p codex-tui

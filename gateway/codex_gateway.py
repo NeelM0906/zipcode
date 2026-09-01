@@ -50,6 +50,14 @@ MODEL_IDENTITY = os.environ.get(
 NAME_LIMIT = 64
 FLAT_SEPARATOR = "__"
 SGLANG_TOOL_TYPES = {"function", "web_search_preview", "code_interpreter", "mcp"}
+QWEN_REASONING_TEMPLATE_EFFORTS = {
+    "low": "low",
+    "medium": "medium",
+    "high": "xhigh",
+    "xhigh": "xhigh",
+    "max": "xhigh",
+    "ultra": "xhigh",
+}
 
 logging.basicConfig(
     level=os.environ.get("QWEN_CODEX_LOG_LEVEL", "INFO").upper(),
@@ -388,23 +396,27 @@ def _prepare_responses_request(payload: dict[str, Any]) -> dict[str, tuple[str, 
     if payload.get("stream") is None:
         payload["stream"] = False
     reasoning = payload.get("reasoning")
-    if isinstance(reasoning, dict) and reasoning.get("effort") in {"xhigh", "max", "ultra"}:
-        requested_effort = str(reasoning["effort"])
-        template_effort = "max" if requested_effort == "ultra" else requested_effort
-        template_kwargs = payload.get("chat_template_kwargs")
-        template_kwargs = template_kwargs if isinstance(template_kwargs, dict) else {}
-        template_kwargs.setdefault("reasoning_effort", template_effort)
-        payload["chat_template_kwargs"] = template_kwargs
-        # The Rust router currently validates only through `high`, while Qwen's
-        # own validator accepts xhigh/medium/low (not high). Preserve the real
-        # tier in chat_template_kwargs and use medium as their common wire tier.
-        reasoning["effort"] = "medium"
-        _metric_transform("reasoning_effort_normalized")
-        LOG.info(
-            "normalized router reasoning tier requested=%s template=%s wire=medium",
-            requested_effort,
-            template_effort,
-        )
+    if isinstance(reasoning, dict):
+        requested_effort = str(reasoning.get("effort", "")).lower()
+        template_effort = QWEN_REASONING_TEMPLATE_EFFORTS.get(requested_effort)
+        if template_effort:
+            template_kwargs = payload.get("chat_template_kwargs")
+            template_kwargs = template_kwargs if isinstance(template_kwargs, dict) else {}
+            template_kwargs["reasoning_effort"] = template_effort
+            payload["chat_template_kwargs"] = template_kwargs
+            # Qwen natively supports low, medium, and xhigh. ZIPCODE maps its
+            # higher UI tiers to xhigh and uses medium on the wire because the
+            # Rust Responses router still emits the unsupported `high` value.
+            wire_effort = "medium" if template_effort == "xhigh" else template_effort
+            reasoning["effort"] = wire_effort
+            if requested_effort != wire_effort:
+                _metric_transform("reasoning_effort_normalized")
+                LOG.info(
+                    "normalized router reasoning tier requested=%s template=%s wire=%s",
+                    requested_effort,
+                    template_effort,
+                    wire_effort,
+                )
     # SGLang does not currently use these OpenAI routing/cache hints. Keeping
     # them would cause strict-schema failures on some pinned builds.
     payload.pop("prompt_cache_options", None)
