@@ -445,9 +445,14 @@ pub enum WebSearchProvider {
     Tinyfish,
 }
 
+fn web_search_provider_schema_default() -> Option<WebSearchProvider> {
+    Some(WebSearchProvider::Model)
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, JsonSchema, TS)]
 #[schemars(deny_unknown_fields)]
 pub struct WebSearchToolConfig {
+    #[schemars(default = "web_search_provider_schema_default")]
     pub provider: Option<WebSearchProvider>,
     pub context_size: Option<WebSearchContextSize>,
     pub allowed_domains: Option<Vec<String>>,
@@ -993,5 +998,19 @@ mod tests {
         };
 
         assert_eq!(expected, base.merge(&overlay));
+    }
+
+    #[test]
+    fn web_search_provider_schema_defaults_to_model() {
+        let schema = schemars::schema_for!(WebSearchToolConfig);
+        let provider_default = serde_json::to_value(schema)
+            .expect("web-search tool config schema should serialize")
+            .pointer("/properties/provider/default")
+            .cloned();
+
+        assert_eq!(
+            provider_default,
+            Some(serde_json::Value::String("model".to_string()))
+        );
     }
 }

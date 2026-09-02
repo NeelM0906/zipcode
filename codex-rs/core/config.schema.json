@@ -5639,7 +5639,12 @@
           "$ref": "#/definitions/WebSearchLocation"
         },
         "provider": {
-          "$ref": "#/definitions/WebSearchProvider"
+          "allOf": [
+            {
+              "$ref": "#/definitions/WebSearchProvider"
+            }
+          ],
+          "default": "model"
         }
       },
       "type": "object"
