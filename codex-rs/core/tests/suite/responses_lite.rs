@@ -13,6 +13,7 @@ use codex_login::CodexAuth;
 use codex_login::auth::BedrockApiKeyAuth;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WebSearchProvider;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ToolMode;
@@ -427,6 +428,52 @@ async fn responses_lite_does_not_expose_standalone_web_search_for_custom_provide
         /*expect_web_run*/ false,
     )
     .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_exposes_tinyfish_web_search() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let auth = CodexAuth::from_api_key("dummy");
+    let extensions = responses_extensions(&auth);
+    let mut builder = test_codex()
+        .with_auth(auth)
+        .with_extensions(extensions)
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            configure_responses_tools(config);
+            config.model_provider.name = "qwen-custom".to_string();
+            config.model_provider.requires_openai_auth = false;
+            config.model_provider.http_headers = None;
+            config.model_provider.supports_standalone_web_search = false;
+            let web_search_config = config
+                .web_search_config
+                .get_or_insert_with(Default::default);
+            web_search_config.provider = WebSearchProvider::Tinyfish;
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("Use TinyFish web search").await?;
+
+    let request = response_mock.single_request();
+    let body = request.body_json();
+    let tools = additional_tools(&body)?;
+    assert!(has_namespaced_tool(tools, "web", "run"));
+    assert!(!has_hosted_tool(tools, "web_search"));
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
