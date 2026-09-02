@@ -74,6 +74,7 @@ impl From<&Config> for WebSearchExtensionConfig {
                 },
                 api_key: std::env::var(TINYFISH_API_KEY_ENV)
                     .ok()
+                    .filter(|api_key| !api_key.trim().is_empty())
                     .map(RedactedString::from),
             },
         };
