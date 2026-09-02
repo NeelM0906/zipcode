@@ -52,6 +52,10 @@ pub struct JsonSchema {
     pub enum_values: Option<Vec<JsonValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub items: Option<Box<JsonSchema>>,
+    #[serde(rename = "minItems", skip_serializing_if = "Option::is_none")]
+    pub min_items: Option<u64>,
+    #[serde(rename = "maxItems", skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub properties: Option<BTreeMap<String, JsonSchema>>,
     #[serde(skip_serializing_if = "Option::is_none")]
