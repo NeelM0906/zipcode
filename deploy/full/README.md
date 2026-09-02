@@ -76,7 +76,7 @@ arguments, tool output, or authorization headers.
 
 ### Remote Codex users
 
-The authenticated public endpoint is `https://olympustest.ngrok.pro/v1`.
+The authenticated public endpoint is `https://notzipcode.ngrok.io/v1`.
 The preferred onboarding path is the isolated kit in `team/`; it does not touch
 a user's normal Codex configuration:
 
@@ -93,7 +93,7 @@ put it in TOML. For a manual installation, they may instead add this provider to
 ```toml
 [model_providers.qwen38_remote]
 name = "Qwen3.8-27B remote"
-base_url = "https://olympustest.ngrok.pro/v1"
+base_url = "https://notzipcode.ngrok.io/v1"
 env_key = "ZIPCODE_API_KEY" # gitleaks:allow -- this is a variable name, not a credential
 wire_api = "responses"
 request_max_retries = 2

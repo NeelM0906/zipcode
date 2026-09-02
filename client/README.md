@@ -1,7 +1,7 @@
 # ZIPCODE team coding agent
 
 ZIPCODE is the team's private coding agent running on the Codex CLI harness. It
-uses the authenticated endpoint at `https://olympustest.ngrok.pro/v1` and keeps
+uses the authenticated endpoint at `https://notzipcode.ngrok.io/v1` and keeps
 its configuration isolated in `~/.zipcode`, so the ordinary `codex` command and
 the user's OpenAI model setup remain untouched.
 

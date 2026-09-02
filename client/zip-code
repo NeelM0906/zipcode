@@ -3,7 +3,7 @@ set -euo pipefail
 
 zipcode_home="${HOME}/.zipcode"
 credential_file="${zipcode_home}/credential"
-endpoint="https://olympustest.ngrok.pro/v1"
+endpoint="https://notzipcode.ngrok.io/v1"
 
 print_banner() {
   if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then

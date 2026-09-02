@@ -2610,7 +2610,10 @@ async fn run_interactive_tui(
         codex_tui::run_main(
             interactive.clone(),
             arg0_paths.clone(),
-            codex_config::LoaderOverrides::default(),
+            codex_config::LoaderOverrides {
+                ignore_project_config: std::env::var_os("ZIPCODE_PRIVATE_MODE").is_some(),
+                ..Default::default()
+            },
             remote_endpoint.clone(),
         )
     };

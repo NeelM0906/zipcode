@@ -7,7 +7,7 @@ sandbox_mode = "workspace-write"
 
 [model_providers.zipcode_team]
 name = "ZIPCODE Private Coding Cloud"
-base_url = "https://olympustest.ngrok.pro/v1"
+base_url = "https://notzipcode.ngrok.io/v1"
 env_key = "ZIPCODE_API_KEY"
 env_key_instructions = "Ask the ZIPCODE operator for your private team credential. Keep it out of config files and shell history."
 wire_api = "responses"

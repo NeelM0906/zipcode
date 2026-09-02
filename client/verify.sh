@@ -2,7 +2,7 @@
 set -euo pipefail
 
 zipcode_home="${ZIPCODE_HOME:-${HOME}/.zipcode}"
-endpoint="https://olympustest.ngrok.pro/v1"
+endpoint="https://notzipcode.ngrok.io/v1"
 model="Qwen/Qwen3.8-Flash-Next"
 verify_sandbox="${ZIPCODE_VERIFY_SANDBOX:-workspace-write}"
 

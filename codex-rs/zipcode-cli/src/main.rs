@@ -17,7 +17,7 @@ use std::time::UNIX_EPOCH;
 
 mod trace_upload;
 
-const DEFAULT_API_URL: &str = "https://olympustest.ngrok.pro/v1";
+const DEFAULT_API_URL: &str = "https://notzipcode.ngrok.io/v1";
 const KEYRING_SERVICE: &str = "ZIPCODE";
 const KEYRING_ACCOUNT: &str = "team-session";
 
@@ -307,8 +307,15 @@ async fn launch_core(args: &[OsString]) -> Result<()> {
 
     let mut command = Command::new(core);
     command
+        .args([
+            "-c",
+            "check_for_update_on_startup=false",
+            "-c",
+            "tui.show_tooltips=false",
+        ])
         .args(args)
         .env("CODEX_HOME", &home)
+        .env("ZIPCODE_PRIVATE_MODE", "1")
         .env("CODEX_ROLLOUT_TRACE_ROOT", &trace_root);
     let status = command.status().context("launch ZIPCODE runtime")?;
 

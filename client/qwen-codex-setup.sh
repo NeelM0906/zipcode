@@ -2,7 +2,7 @@
 set -euo pipefail
 
 setup_version="1.1.0"
-endpoint="https://olympustest.ngrok.pro/v1"
+endpoint="https://notzipcode.ngrok.io/v1"
 zipcode_home="${HOME}/.zipcode"
 legacy_home="${HOME}/.qwen-codex"
 launcher_dir="${HOME}/.local/bin"
@@ -189,7 +189,7 @@ sandbox_mode = "workspace-write"
 
 [model_providers.zipcode_team]
 name = "ZIPCODE Private Coding Cloud"
-base_url = "https://olympustest.ngrok.pro/v1"
+base_url = "https://notzipcode.ngrok.io/v1"
 env_key = "ZIPCODE_API_KEY"
 wire_api = "responses"
 request_max_retries = 2
@@ -212,7 +212,7 @@ set -euo pipefail
 
 zipcode_home="${HOME}/.zipcode"
 credential_file="${zipcode_home}/credential"
-endpoint="https://olympustest.ngrok.pro/v1"
+endpoint="https://notzipcode.ngrok.io/v1"
 
 print_banner() {
   if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then

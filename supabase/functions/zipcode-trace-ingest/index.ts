@@ -3,7 +3,7 @@ const BUCKET = "zipcode-rollout-traces";
 const CAPTURE_POLICY_VERSION = 1;
 const MAX_PART_BYTES = 4 * 1024 * 1024;
 const MAX_SESSION_JSON_BYTES = 64 * 1024;
-const DEFAULT_ZIPCODE_API = "https://olympustest.ngrok.pro/v1";
+const DEFAULT_ZIPCODE_API = "https://notzipcode.ngrok.io/v1";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
