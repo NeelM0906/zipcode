@@ -138,44 +138,31 @@ impl TinyFishSearchClient {
                 http::StatusCode::UNAUTHORIZED => Err(TinyFishError::ApiKeyRejected),
                 http::StatusCode::TOO_MANY_REQUESTS => Err(TinyFishError::RateLimited),
                 _ => {
-                    let mut response = response;
-                    let mut body = Vec::new();
-                    let mut truncated = false;
-                    let mut body_read_failed = false;
-                    while body.len() < MAX_ERROR_BODY_BYTES {
-                        let chunk = match response.chunk().await {
-                            Ok(Some(chunk)) => chunk,
-                            Ok(None) => break,
-                            Err(_) => {
-                                body_read_failed = true;
-                                break;
+                    let body = match response.content_length() {
+                        Some(length) if length > MAX_ERROR_BODY_BYTES as u64 => format!(
+                            "[response body omitted because it exceeds {MAX_ERROR_BODY_BYTES} bytes]"
+                        ),
+                        Some(_) => match response.bytes().await {
+                            Ok(bytes) if bytes.len() <= MAX_ERROR_BODY_BYTES => {
+                                let mut body = String::from_utf8_lossy(&bytes).into_owned();
+                                if !self.api_key.as_str().is_empty() {
+                                    body = body.replace(self.api_key.as_str(), "[REDACTED]");
+                                }
+                                if body.len() <= MAX_ERROR_BODY_BYTES {
+                                    body
+                                } else {
+                                    format!(
+                                        "[response body omitted because it exceeds {MAX_ERROR_BODY_BYTES} bytes after redaction]"
+                                    )
+                                }
                             }
-                        };
-                        let remaining = MAX_ERROR_BODY_BYTES - body.len();
-                        if chunk.len() > remaining {
-                            body.extend_from_slice(&chunk[..remaining]);
-                            truncated = true;
-                            break;
-                        }
-                        body.extend_from_slice(&chunk);
-                    }
-                    if body.len() == MAX_ERROR_BODY_BYTES {
-                        truncated = true;
-                    }
-
-                    let mut body = String::from_utf8_lossy(&body).into_owned();
-                    if !self.api_key.as_str().is_empty() {
-                        body = body.replace(self.api_key.as_str(), "[REDACTED]");
-                    }
-                    while body.len() > MAX_ERROR_BODY_BYTES {
-                        body.pop();
-                    }
-                    if truncated {
-                        body.push_str("\n[response body truncated after 1024 bytes]");
-                    }
-                    if body_read_failed {
-                        body.push_str("\n[failed to read response body]");
-                    }
+                            Ok(_) => format!(
+                                "[response body omitted because it exceeds {MAX_ERROR_BODY_BYTES} bytes]"
+                            ),
+                            Err(_) => "[failed to read response body]".to_string(),
+                        },
+                        None => "[response body omitted because its length is unknown]".to_string(),
+                    };
                     Err(TinyFishError::HttpStatus { status, body })
                 }
             };

@@ -11,6 +11,7 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 use wiremock::matchers::query_param;
 
+use crate::tinyfish::TinyFishError;
 use crate::tinyfish::TinyFishSearchClient;
 use crate::tinyfish::TinyFishSearchRequest;
 use crate::tinyfish::TinyFishSearchResponse;
@@ -155,14 +156,62 @@ async fn tinyfish_error_body_is_bounded_and_redacts_the_api_key() {
         .expect_err("500 should fail");
     let formatted = error.to_string();
     let debug = format!("{error:?}");
+    let body = http_status_body(&error);
 
-    assert!(formatted.contains("provider failure containing [REDACTED]"));
-    assert!(debug.contains("provider failure containing [REDACTED]"));
+    assert_eq!(
+        body,
+        "[response body omitted because it exceeds 1024 bytes]"
+    );
     assert!(formatted.len() <= 1_200, "formatted error was unbounded");
     assert!(debug.len() <= 1_300, "debug error was unbounded");
     assert!(!formatted.contains(TEST_API_KEY));
     assert!(!debug.contains(TEST_API_KEY));
     assert!(provider_body.len() > 1_024);
+}
+
+#[tokio::test]
+async fn tinyfish_error_body_does_not_expose_a_secret_crossing_the_limit() {
+    const BOUNDARY_API_KEY: &str = "BOUNDARY-SECRET-KEY";
+
+    let server = MockServer::start().await;
+    let provider_body = format!("{}{BOUNDARY_API_KEY}", "x".repeat(1_020));
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(/*status*/ 500).set_body_string(provider_body))
+        .mount(&server)
+        .await;
+
+    let error = test_client_with_api_key(&server, BOUNDARY_API_KEY)
+        .search(&test_request())
+        .await
+        .expect_err("500 should fail");
+    let formatted = error.to_string();
+    let debug = format!("{error:?}");
+    let body = http_status_body(&error);
+
+    assert_eq!(
+        body,
+        "[response body omitted because it exceeds 1024 bytes]"
+    );
+    assert!(!formatted.contains("BOUN"));
+    assert!(!debug.contains("BOUN"));
+}
+
+#[tokio::test]
+async fn tinyfish_error_body_at_exact_limit_is_not_marked_truncated() {
+    let server = MockServer::start().await;
+    let provider_body = "z".repeat(1_024);
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(/*status*/ 500).set_body_string(provider_body.clone()))
+        .mount(&server)
+        .await;
+
+    let error = test_client(&server)
+        .search(&test_request())
+        .await
+        .expect_err("500 should fail");
+
+    assert_eq!(http_status_body(&error), provider_body);
+    assert!(!error.to_string().contains("truncated"));
 }
 
 #[tokio::test]
@@ -198,12 +247,23 @@ async fn tinyfish_error_recency_overflow_prevents_the_request() {
 }
 
 fn test_client(server: &MockServer) -> TinyFishSearchClient {
+    test_client_with_api_key(server, TEST_API_KEY)
+}
+
+fn test_client_with_api_key(server: &MockServer, api_key: &str) -> TinyFishSearchClient {
     TinyFishSearchClient::new(
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         Url::parse(&server.uri()).expect("mock endpoint should be valid"),
-        RedactedString::from(TEST_API_KEY),
+        RedactedString::from(api_key),
     )
     .expect("client should build")
+}
+
+fn http_status_body(error: &TinyFishError) -> &str {
+    let TinyFishError::HttpStatus { body, .. } = error else {
+        panic!("expected an HTTP status error, got {error:?}");
+    };
+    body
 }
 
 fn test_request() -> TinyFishSearchRequest {
