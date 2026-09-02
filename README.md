@@ -63,6 +63,19 @@ The default is `Qwen/Qwen3.8-Flash-Next` with a 524K configured context. The
 full route is `Qwen/Qwen3.8-27B-FP8` with a 1M configured context. These are
 serving limits for the current deployment, not generic capability guarantees.
 
+## TinyFish web search
+
+```bash
+export TINYFISH_API_KEY="..."
+```
+
+```toml
+web_search = "live"
+
+[tools.web_search]
+provider = "tinyfish"
+```
+
 ## What is included
 
 - A Rust `zip-code` front end with isolated `~/.zipcode` state.
