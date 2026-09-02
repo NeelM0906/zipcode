@@ -84,6 +84,7 @@ use codex_network_proxy::NetworkMode;
 use codex_protocol::config_types::ModelProviderAuthInfo;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::config_types::WebSearchProvider;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
@@ -438,6 +439,58 @@ web_search = false
             update_plan: None,
         })
     );
+}
+
+#[tokio::test]
+async fn tools_web_search_tinyfish_provider_is_loaded() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let config_toml: ConfigToml = toml::from_str(
+        r#"
+web_search = "live"
+
+[tools.web_search]
+provider = "tinyfish"
+"#,
+    )
+    .expect("TinyFish web-search config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.web_search_config.map(|config| config.provider),
+        Some(WebSearchProvider::Tinyfish)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn tools_web_search_provider_defaults_to_model() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let config_toml: ConfigToml = toml::from_str(
+        r#"
+[tools.web_search]
+allowed_domains = ["docs.rs"]
+"#,
+    )
+    .expect("web-search config should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.web_search_config.map(|config| config.provider),
+        Some(WebSearchProvider::Model)
+    );
+    Ok(())
 }
 
 #[test]
