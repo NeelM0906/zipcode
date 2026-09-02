@@ -120,6 +120,35 @@ fn tinyfish_tool_intersects_domains_case_insensitively_in_configured_order() {
 }
 
 #[test]
+fn tinyfish_tool_uses_only_nonempty_country_for_location() {
+    let settings = SearchSettings {
+        user_location: Some(ApproximateLocation {
+            r#type: LocationType::Approximate,
+            country: Some("US".to_string()),
+            region: Some("private-region".to_string()),
+            city: Some("private-city".to_string()),
+            timezone: Some("private/timezone".to_string()),
+        }),
+        ..Default::default()
+    };
+
+    let requests = prepare_tinyfish_requests(
+        &TinyFishCommands {
+            search_query: vec![search_query("rust", None)],
+            response_length: None,
+        },
+        &settings,
+    )
+    .expect("country should be accepted as the location");
+
+    assert_eq!(requests[0].location.as_deref(), Some("US"));
+    let location = requests[0].location.as_deref().expect("country location");
+    assert!(!location.contains("private-city"));
+    assert!(!location.contains("private-region"));
+    assert!(!location.contains("private/timezone"));
+}
+
+#[test]
 fn tinyfish_tool_rejects_empty_domain_intersection() {
     let settings = SearchSettings {
         filters: Some(SearchFilters {
@@ -314,7 +343,7 @@ async fn tinyfish_tool_recency_overflow_responds_to_model_without_http_or_events
 }
 
 #[tokio::test]
-async fn tinyfish_tool_bounds_oversized_results_for_output_and_events() {
+async fn tinyfish_tool_code_mode_bounds_oversized_results_for_output_and_events() {
     const MAX_MODEL_CONTEXT_TOKENS: usize = 10_000;
     let server = MockServer::start().await;
     let oversized = "provider-data".repeat(10_000);
@@ -357,7 +386,11 @@ async fn tinyfish_tool_bounds_oversized_results_for_output_and_events() {
         ConversationHistory::default(),
         Arc::clone(&emitter) as Arc<dyn TurnItemEmitter>,
     );
-    call.truncation_policy = TruncationPolicy::Tokens(50_000);
+    call.truncation_policy = TruncationPolicy::Bytes(1);
+    call.source = ToolCallSource::CodeMode {
+        cell_id: "cell-1".to_string(),
+        runtime_tool_call_id: "runtime-call-1".to_string(),
+    };
 
     let output = tool
         .handle_call(call)
@@ -423,6 +456,54 @@ async fn tinyfish_tool_bounds_oversized_results_for_output_and_events() {
         completed[0].legacy_events.as_slice(),
         [EventMsg::WebSearchEnd(event)] if event.results.as_ref() == Some(&flattened_results)
     ));
+}
+
+#[tokio::test]
+async fn tinyfish_tool_responds_to_model_when_direct_budget_cannot_fit_grouped_json() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .and(query_param("query", "rust"))
+        .respond_with(
+            ResponseTemplate::new(/*status*/ 200).set_body_json(serde_json::json!({
+                "query": "rust",
+                "results": [result_json("rust", 1)],
+                "total_results": 1,
+                "page": 0,
+            })),
+        )
+        .mount(&server)
+        .await;
+    let tool = tinyfish_tool(&server, Some("test-key"), SearchSettings::default());
+    let emitter = Arc::new(RecordingTurnItemEmitter::default());
+    let mut call = tool_call(
+        serde_json::json!({"search_query": [{"q": "rust"}]}),
+        ConversationHistory::default(),
+        Arc::clone(&emitter) as Arc<dyn TurnItemEmitter>,
+    );
+    call.truncation_policy = TruncationPolicy::Bytes(1);
+
+    let result = tool.handle_call(call).await;
+    let Err(error) = result else {
+        panic!("an unrepresentable Direct response budget should be model-visible");
+    };
+
+    assert_eq!(
+        error,
+        FunctionCallError::RespondToModel(
+            "TinyFish response exceeds the available output budget".to_string()
+        )
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("recorded requests should be available")
+            .len(),
+        1
+    );
+    assert_eq!(emitter.started.lock().expect("started lock").len(), 1);
+    assert!(emitter.completed.lock().expect("completed lock").is_empty());
 }
 
 #[test]
@@ -621,17 +702,25 @@ async fn tinyfish_tool_sends_only_search_parameters_and_emits_persistable_lifecy
                 ("query".to_string(), "rust async traits".to_string()),
                 ("include_domains".to_string(), "docs.rs".to_string()),
                 ("recency_minutes".to_string(), "2880".to_string()),
-                ("location".to_string(), "New York, NY, US".to_string()),
+                ("location".to_string(), "US".to_string()),
             ],
             vec![
                 ("query".to_string(), "tokio tasks".to_string()),
                 ("include_domains".to_string(), "docs.rs".to_string()),
                 ("recency_minutes".to_string(), "2880".to_string()),
-                ("location".to_string(), "New York, NY, US".to_string()),
+                ("location".to_string(), "US".to_string()),
             ],
         ]
     );
     for request in &requests {
+        let location = request
+            .url
+            .query_pairs()
+            .find_map(|(key, value)| (key == "location").then(|| value.into_owned()))
+            .expect("location query parameter");
+        assert_eq!(location, "US");
+        assert!(!location.contains("New York"));
+        assert!(!location.contains("NY"));
         assert_eq!(
             request
                 .headers
@@ -781,7 +870,7 @@ async fn mount_tinyfish_response(
         .and(query_param("query", query))
         .and(query_param("include_domains", "docs.rs"))
         .and(query_param("recency_minutes", "2880"))
-        .and(query_param("location", "New York, NY, US"))
+        .and(query_param("location", "US"))
         .respond_with(
             ResponseTemplate::new(/*status*/ 200).set_body_json(serde_json::json!({
                 "query": response_query,

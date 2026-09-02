@@ -12,6 +12,7 @@ use codex_protocol::protocol::TruncationPolicy;
 use codex_protocol::protocol::WebSearchBeginEvent;
 use codex_protocol::protocol::WebSearchEndEvent;
 use codex_utils_redacted_string::RedactedString;
+use serde::Serialize;
 use url::Url;
 
 use super::WebSearchTool;
@@ -126,18 +127,13 @@ pub(super) fn prepare_tinyfish_requests(
         .filters
         .as_ref()
         .and_then(|filters| filters.allowed_domains.as_deref());
-    let location = settings.user_location.as_ref().and_then(|location| {
-        let parts = [
-            location.city.as_deref(),
-            location.region.as_deref(),
-            location.country.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .filter(|part| !part.trim().is_empty())
-        .collect::<Vec<_>>();
-        (!parts.is_empty()).then(|| parts.join(", "))
-    });
+    let location = settings
+        .user_location
+        .as_ref()
+        .and_then(|location| location.country.as_deref())
+        .map(str::trim)
+        .filter(|country| !country.is_empty())
+        .map(str::to_string);
 
     commands
         .search_query
@@ -204,6 +200,56 @@ pub(super) struct TinyFishFormattedOutput {
     pub(super) queries: Vec<String>,
 }
 
+#[derive(Serialize)]
+struct TinyFishOutputView<'a> {
+    provider: &'static str,
+    searches: Vec<TinyFishSearchView<'a>>,
+}
+
+#[derive(Serialize)]
+struct TinyFishSearchView<'a> {
+    query: BoundedString<'a>,
+    results: Vec<TinyFishResultView<'a>>,
+}
+
+#[derive(Serialize)]
+struct TinyFishResultView<'a> {
+    position: u64,
+    site_name: BoundedString<'a>,
+    title: BoundedString<'a>,
+    snippet: BoundedString<'a>,
+    url: BoundedString<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    date: Option<BoundedString<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    publisher: Option<BoundedString<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authors: Option<Vec<BoundedString<'a>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    venue: Option<BoundedString<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    year: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cited_by_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pdf_url: Option<BoundedString<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct BoundedString<'a> {
+    value: &'a str,
+    byte_budget: usize,
+}
+
+impl Serialize for BoundedString<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(bounded_prefix(self.value, self.byte_budget))
+    }
+}
+
 pub(super) fn format_tinyfish_output(
     mut responses: Vec<TinyFishSearchResponse>,
     response_length: Option<SearchResponseLength>,
@@ -217,9 +263,25 @@ pub(super) fn format_tinyfish_output(
         response.results.truncate(result_limit);
     }
 
-    let formatted = build_tinyfish_formatted_output(responses.clone())?;
-    if formatted.output.len() <= response_byte_budget {
-        return Ok(formatted);
+    let output = serialize_tinyfish_output(&responses, usize::MAX)?;
+    if output.len() <= response_byte_budget {
+        return build_tinyfish_formatted_output(responses, output);
+    }
+    drop(output);
+
+    let mut best_output = serialize_tinyfish_output(&responses, 0)?;
+    while best_output.len() > response_byte_budget {
+        let Some(response) = responses
+            .iter_mut()
+            .rev()
+            .find(|response| !response.results.is_empty())
+        else {
+            return Err(FunctionCallError::RespondToModel(
+                "TinyFish response exceeds the available output budget".to_string(),
+            ));
+        };
+        response.results.pop();
+        best_output = serialize_tinyfish_output(&responses, 0)?;
     }
 
     let max_field_bytes = responses
@@ -247,15 +309,13 @@ pub(super) fn format_tinyfish_output(
         .unwrap_or(0);
     let mut lower_bound = 0;
     let mut upper_bound = max_field_bytes;
-    let mut best = build_tinyfish_formatted_output(normalize_tinyfish_responses(&responses, 0))?;
+    let mut best_field_byte_budget = 0;
     while lower_bound <= upper_bound {
         let field_byte_budget = lower_bound + (upper_bound - lower_bound) / 2;
-        let candidate = build_tinyfish_formatted_output(normalize_tinyfish_responses(
-            &responses,
-            field_byte_budget,
-        ))?;
-        if candidate.output.len() <= response_byte_budget {
-            best = candidate;
+        let candidate = serialize_tinyfish_output(&responses, field_byte_budget)?;
+        if candidate.len() <= response_byte_budget {
+            best_output = candidate;
+            best_field_byte_budget = field_byte_budget;
             lower_bound = field_byte_budget.saturating_add(1);
         } else if field_byte_budget == 0 {
             break;
@@ -264,27 +324,12 @@ pub(super) fn format_tinyfish_output(
         }
     }
 
-    while best.output.len() > response_byte_budget {
-        let Some(response) = responses
-            .iter_mut()
-            .rev()
-            .find(|response| !response.results.is_empty())
-        else {
-            break;
-        };
-        response.results.pop();
-        best = build_tinyfish_formatted_output(normalize_tinyfish_responses(&responses, 0))?;
-    }
-
-    Ok(best)
+    truncate_tinyfish_responses(&mut responses, best_field_byte_budget);
+    build_tinyfish_formatted_output(responses, best_output)
 }
 
-fn normalize_tinyfish_responses(
-    responses: &[TinyFishSearchResponse],
-    field_byte_budget: usize,
-) -> Vec<TinyFishSearchResponse> {
-    let mut responses = responses.to_vec();
-    for response in &mut responses {
+fn truncate_tinyfish_responses(responses: &mut [TinyFishSearchResponse], field_byte_budget: usize) {
+    for response in responses {
         truncate_to_byte_budget(&mut response.query, field_byte_budget);
         for result in &mut response.results {
             truncate_to_byte_budget(&mut result.site_name, field_byte_budget);
@@ -307,7 +352,6 @@ fn normalize_tinyfish_responses(
             }
         }
     }
-    responses
 }
 
 fn truncate_to_byte_budget(value: &mut String, byte_budget: usize) {
@@ -321,8 +365,90 @@ fn truncate_to_byte_budget(value: &mut String, byte_budget: usize) {
     value.truncate(boundary);
 }
 
+fn bounded_prefix(value: &str, byte_budget: usize) -> &str {
+    if value.len() <= byte_budget {
+        return value;
+    }
+    let mut boundary = byte_budget;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &value[..boundary]
+}
+
+fn serialize_tinyfish_output(
+    responses: &[TinyFishSearchResponse],
+    field_byte_budget: usize,
+) -> Result<String, FunctionCallError> {
+    let searches = responses
+        .iter()
+        .map(|response| TinyFishSearchView {
+            query: BoundedString {
+                value: &response.query,
+                byte_budget: field_byte_budget,
+            },
+            results: response
+                .results
+                .iter()
+                .map(|result| TinyFishResultView {
+                    position: result.position,
+                    site_name: BoundedString {
+                        value: &result.site_name,
+                        byte_budget: field_byte_budget,
+                    },
+                    title: BoundedString {
+                        value: &result.title,
+                        byte_budget: field_byte_budget,
+                    },
+                    snippet: BoundedString {
+                        value: &result.snippet,
+                        byte_budget: field_byte_budget,
+                    },
+                    url: BoundedString {
+                        value: &result.url,
+                        byte_budget: field_byte_budget,
+                    },
+                    date: result.date.as_deref().map(|value| BoundedString {
+                        value,
+                        byte_budget: field_byte_budget,
+                    }),
+                    publisher: result.publisher.as_deref().map(|value| BoundedString {
+                        value,
+                        byte_budget: field_byte_budget,
+                    }),
+                    authors: result.authors.as_ref().map(|authors| {
+                        authors
+                            .iter()
+                            .map(|value| BoundedString {
+                                value,
+                                byte_budget: field_byte_budget,
+                            })
+                            .collect()
+                    }),
+                    venue: result.venue.as_deref().map(|value| BoundedString {
+                        value,
+                        byte_budget: field_byte_budget,
+                    }),
+                    year: result.year,
+                    cited_by_count: result.cited_by_count,
+                    pdf_url: result.pdf_url.as_deref().map(|value| BoundedString {
+                        value,
+                        byte_budget: field_byte_budget,
+                    }),
+                })
+                .collect(),
+        })
+        .collect();
+    serde_json::to_string_pretty(&TinyFishOutputView {
+        provider: "tinyfish",
+        searches,
+    })
+    .map_err(|err| FunctionCallError::Fatal(err.to_string()))
+}
+
 fn build_tinyfish_formatted_output(
     responses: Vec<TinyFishSearchResponse>,
+    output: String,
 ) -> Result<TinyFishFormattedOutput, FunctionCallError> {
     let results = responses
         .iter()
@@ -334,20 +460,6 @@ fn build_tinyfish_formatted_output(
         .iter()
         .map(|response| response.query.clone())
         .collect::<Vec<_>>();
-    let searches = responses
-        .into_iter()
-        .map(|response| {
-            serde_json::json!({
-                "query": response.query,
-                "results": response.results,
-            })
-        })
-        .collect::<Vec<_>>();
-    let output = serde_json::to_string_pretty(&serde_json::json!({
-        "provider": "tinyfish",
-        "searches": searches,
-    }))
-    .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
     Ok(TinyFishFormattedOutput {
         output,
         results,
