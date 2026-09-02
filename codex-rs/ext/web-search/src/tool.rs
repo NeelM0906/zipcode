@@ -33,6 +33,7 @@ use http::HeaderMap;
 use http::HeaderValue;
 use url::Url;
 
+use crate::extension::WebSearchBackend;
 use crate::history::recent_input;
 use crate::output::SearchOutput;
 use crate::schema::commands_schema;
@@ -44,7 +45,7 @@ const RESULTS_PAYLOAD_BYTES_METRIC: &str = "codex.web_search.results.payload_byt
 
 pub(crate) struct WebSearchTool {
     pub(crate) session_id: String,
-    pub(crate) provider: SharedModelProvider,
+    pub(crate) backend: WebSearchBackend,
     pub(crate) settings: SearchSettings,
     pub(crate) originator: Option<String>,
 }
@@ -96,21 +97,29 @@ impl WebSearchTool {
         &self,
         call: ToolCall<'_>,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+        match &self.backend {
+            WebSearchBackend::Model { provider } => self.handle_model_call(call, provider).await,
+        }
+    }
+
+    async fn handle_model_call(
+        &self,
+        call: ToolCall<'_>,
+        provider: &SharedModelProvider,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let commands = parse_commands(&call)?;
         let command_action = command_action(&commands);
-        let provider = self
-            .provider
+        let api_provider = provider
             .api_provider()
             .await
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
-        let auth = self
-            .provider
+        let auth = provider
             .api_auth()
             .await
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
         let client = SearchClient::new(
             ReqwestTransport::from_http_client(create_client()),
-            provider,
+            api_provider,
             auth,
         );
         let request = SearchRequest {

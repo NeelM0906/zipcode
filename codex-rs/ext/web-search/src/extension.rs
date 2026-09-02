@@ -18,6 +18,7 @@ use codex_extension_api::ThreadOriginator;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolContributor;
 use codex_login::AuthManager;
+use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchContextSize;
@@ -35,6 +36,11 @@ struct WebSearchExtensionConfig {
     available: bool,
     provider: ModelProviderInfo,
     settings: SearchSettings,
+}
+
+#[derive(Clone)]
+pub(crate) enum WebSearchBackend {
+    Model { provider: SharedModelProvider },
 }
 
 impl From<&Config> for WebSearchExtensionConfig {
@@ -133,10 +139,12 @@ impl ToolContributor for WebSearchExtension {
 
         vec![Arc::new(WebSearchTool {
             session_id: session_store.level_id().to_string(),
-            provider: create_model_provider(
-                config.provider.clone(),
-                Some(self.auth_manager.clone()),
-            ),
+            backend: WebSearchBackend::Model {
+                provider: create_model_provider(
+                    config.provider.clone(),
+                    Some(self.auth_manager.clone()),
+                ),
+            },
             settings: config.settings.clone(),
             originator: thread_store
                 .get::<ThreadOriginator>()
@@ -154,15 +162,26 @@ pub fn install(registry: &mut ExtensionRegistryBuilder<Config>, auth_manager: Ar
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    use codex_core::config::ConfigBuilder;
     use codex_extension_api::ExtensionData;
     use codex_extension_api::ExtensionRegistryBuilder;
     use codex_extension_api::ToolName;
+    use codex_extension_api::ToolSpec;
     use codex_login::CodexAuth;
+    use codex_model_provider::create_model_provider;
     use codex_model_provider_info::ModelProviderInfo;
+    use codex_protocol::config_types::WebSearchProvider;
+    use codex_tools::ResponsesApiNamespaceTool;
+    use codex_tools::ToolExposure;
     use pretty_assertions::assert_eq;
 
     use super::AuthManager;
     use super::Config;
+    use super::WebSearchBackend;
     use super::WebSearchExtensionConfig;
     use super::external_web_access_for_mode;
     use super::install;
@@ -192,12 +211,10 @@ mod tests {
     }
 
     #[test]
-    fn installed_extension_contributes_web_run_when_enabled() {
+    fn installed_model_backend_preserves_web_run_availability() {
         let mut builder = ExtensionRegistryBuilder::<Config>::new();
-        install(
-            &mut builder,
-            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
-        );
+        let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+        install(&mut builder, auth_manager.clone());
         let registry = builder.build();
         let session_store = ExtensionData::new("session");
         let thread_store = ExtensionData::new("11111111-1111-4111-8111-111111111111");
@@ -207,16 +224,96 @@ mod tests {
             settings: Default::default(),
         });
 
-        let tool_names = registry
+        let tools = registry
             .tool_contributors()
             .iter()
             .flat_map(|contributor| contributor.tools(&session_store, &thread_store))
-            .map(|tool| (tool.tool_name(), tool.supports_parallel_tool_calls()))
             .collect::<Vec<_>>();
+        let [tool] = tools.as_slice() else {
+            panic!("enabled model web search should contribute one tool");
+        };
 
         assert_eq!(
-            tool_names,
-            vec![(ToolName::namespaced(WEB_NAMESPACE, RUN_TOOL_NAME), true)]
+            (
+                tool.tool_name(),
+                tool.exposure(),
+                tool.supports_parallel_tool_calls(),
+            ),
+            (
+                ToolName::namespaced(WEB_NAMESPACE, RUN_TOOL_NAME),
+                ToolExposure::Direct,
+                true,
+            )
         );
+
+        let ToolSpec::Namespace(namespace) = tool.spec() else {
+            panic!("model web search should retain its namespace tool spec");
+        };
+        let [ResponsesApiNamespaceTool::Function(function)] = namespace.tools.as_slice() else {
+            panic!("web namespace should retain one function tool");
+        };
+        let schema = serde_json::to_value(&function.parameters).expect("schema should serialize");
+        let properties = schema["properties"]
+            .as_object()
+            .expect("schema properties should be an object");
+        for command in [
+            "search_query",
+            "image_query",
+            "open",
+            "click",
+            "find",
+            "screenshot",
+        ] {
+            assert!(
+                properties.contains_key(command),
+                "model web search should retain the {command} command"
+            );
+        }
+
+        let backend = WebSearchBackend::Model {
+            provider: create_model_provider(
+                ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+                Some(auth_manager),
+            ),
+        };
+        let WebSearchBackend::Model { provider } = backend;
+        assert_eq!(
+            provider.info(),
+            &ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+        );
+    }
+
+    #[tokio::test]
+    async fn tinyfish_config_cannot_activate_before_backend_is_wired() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test time should follow the Unix epoch")
+            .as_nanos();
+        let test_root = std::env::temp_dir().join(format!(
+            "codex-web-search-dispatch-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&test_root).expect("test root should be created");
+        let config_result = ConfigBuilder::default()
+            .codex_home(test_root.clone())
+            .fallback_cwd(Some(test_root.clone()))
+            .cli_overrides(vec![
+                ("web_search".to_string(), "live".into()),
+                ("tools.web_search.provider".to_string(), "tinyfish".into()),
+            ])
+            .build()
+            .await;
+        fs::remove_dir_all(&test_root).expect("test root should be removed");
+        let config = config_result.expect("TinyFish config should load");
+        assert_eq!(
+            config
+                .web_search_config
+                .as_ref()
+                .map(|config| config.provider),
+            Some(WebSearchProvider::Tinyfish)
+        );
+
+        let extension_config = WebSearchExtensionConfig::from(&config);
+        assert_eq!(extension_config.provider, config.model_provider);
     }
 }
