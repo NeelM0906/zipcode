@@ -3,6 +3,7 @@ use std::time::Duration;
 use codex_http_client::BuildRouteAwareHttpClientError;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClient;
+use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::HttpError;
 use codex_utils_redacted_string::RedactedString;
@@ -15,6 +16,7 @@ pub(crate) const TINYFISH_SEARCH_ENDPOINT: &str = "https://api.search.tinyfish.a
 pub(crate) const TINYFISH_API_KEY_ENV: &str = "TINYFISH_API_KEY";
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ERROR_BODY_BYTES: usize = 1024;
+const MAX_SUCCESS_BODY_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct TinyFishSearchClient {
@@ -42,11 +44,30 @@ pub(crate) struct TinyFishSearchResponse {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct TinyFishSearchResult {
+    #[serde(default)]
     pub position: u64,
+    #[serde(default)]
     pub site_name: String,
+    #[serde(default)]
     pub title: String,
+    #[serde(default)]
     pub snippet: String,
+    #[serde(default)]
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authors: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub venue: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cited_by_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf_url: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -65,15 +86,24 @@ pub(crate) enum TinyFishError {
     ApiKeyRejected,
     #[error("TinyFish web search rate limit exceeded")]
     RateLimited,
+    #[error("TinyFish account lacks Search API access")]
+    AccessDenied,
     #[error("TinyFish web search returned HTTP {status}: {body}")]
     HttpStatus {
         status: http::StatusCode,
         body: String,
     },
+    #[error("TinyFish web search response exceeded 1048576 bytes")]
+    ResponseTooLarge,
+    #[error("failed to read TinyFish web search response")]
+    ResponseRead {
+        #[source]
+        source: HttpError,
+    },
     #[error("TinyFish web search returned invalid JSON")]
     ResponseDecode {
         #[source]
-        source: HttpError,
+        source: serde_json::Error,
     },
     #[error("TinyFish recency_days value {days} is too large")]
     RecencyOverflow { days: u64 },
@@ -96,8 +126,14 @@ impl TinyFishSearchClient {
         endpoint: Url,
         api_key: RedactedString,
     ) -> Result<Self, TinyFishError> {
-        let client = http_client_factory
-            .build_client_without_request_logging(endpoint.as_str(), ClientRouteClass::Other)
+        let client = HttpClientBuilder::new()
+            .without_redirects()
+            .without_request_logging()
+            .build_respecting_outbound_proxy_policy(
+                &http_client_factory,
+                endpoint.as_str(),
+                ClientRouteClass::Other,
+            )
             .map_err(|source| TinyFishError::Configuration { source })?;
         Ok(Self {
             client,
@@ -136,6 +172,9 @@ impl TinyFishSearchClient {
         if !status.is_success() {
             return match status {
                 http::StatusCode::UNAUTHORIZED => Err(TinyFishError::ApiKeyRejected),
+                http::StatusCode::PAYMENT_REQUIRED | http::StatusCode::FORBIDDEN => {
+                    Err(TinyFishError::AccessDenied)
+                }
                 http::StatusCode::TOO_MANY_REQUESTS => Err(TinyFishError::RateLimited),
                 _ => {
                     let body = match response.content_length() {
@@ -168,9 +207,29 @@ impl TinyFishSearchClient {
             };
         }
 
-        response
-            .json()
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_SUCCESS_BODY_BYTES as u64)
+        {
+            return Err(TinyFishError::ResponseTooLarge);
+        }
+
+        let mut response = response;
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|source| TinyFishError::ResponseDecode { source })
+            .map_err(|source| TinyFishError::ResponseRead { source })?
+        {
+            let Some(next_length) = body.len().checked_add(chunk.len()) else {
+                return Err(TinyFishError::ResponseTooLarge);
+            };
+            if next_length > MAX_SUCCESS_BODY_BYTES {
+                return Err(TinyFishError::ResponseTooLarge);
+            }
+            body.extend_from_slice(&chunk);
+        }
+
+        serde_json::from_slice(&body).map_err(|source| TinyFishError::ResponseDecode { source })
     }
 }

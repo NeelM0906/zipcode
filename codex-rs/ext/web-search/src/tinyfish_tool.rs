@@ -228,11 +228,18 @@ pub(super) fn format_tinyfish_output(
             std::iter::once(response.query.len()).chain(response.results.iter().flat_map(
                 |result| {
                     [
-                        result.site_name.len(),
-                        result.title.len(),
-                        result.snippet.len(),
-                        result.url.len(),
+                        Some(result.site_name.len()),
+                        Some(result.title.len()),
+                        Some(result.snippet.len()),
+                        Some(result.url.len()),
+                        result.date.as_ref().map(String::len),
+                        result.publisher.as_ref().map(String::len),
+                        result.venue.as_ref().map(String::len),
+                        result.pdf_url.as_ref().map(String::len),
                     ]
+                    .into_iter()
+                    .flatten()
+                    .chain(result.authors.iter().flatten().map(String::len))
                 },
             ))
         })
@@ -284,6 +291,20 @@ fn normalize_tinyfish_responses(
             truncate_to_byte_budget(&mut result.title, field_byte_budget);
             truncate_to_byte_budget(&mut result.snippet, field_byte_budget);
             truncate_to_byte_budget(&mut result.url, field_byte_budget);
+            for value in [
+                &mut result.date,
+                &mut result.publisher,
+                &mut result.venue,
+                &mut result.pdf_url,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                truncate_to_byte_budget(value, field_byte_budget);
+            }
+            for author in result.authors.iter_mut().flatten() {
+                truncate_to_byte_budget(author, field_byte_budget);
+            }
         }
     }
     responses

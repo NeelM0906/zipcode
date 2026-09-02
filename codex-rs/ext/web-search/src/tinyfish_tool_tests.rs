@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -426,6 +425,47 @@ async fn tinyfish_tool_bounds_oversized_results_for_output_and_events() {
     ));
 }
 
+#[test]
+fn tinyfish_tool_bounds_optional_metadata_without_dropping_the_result() {
+    let oversized = "provider-metadata".repeat(1_000);
+    let mut response = tinyfish_response("metadata", 1);
+    let result = &mut response.results[0];
+    result.date = Some(oversized.clone());
+    result.publisher = Some(oversized.clone());
+    result.authors = Some(vec![oversized.clone(), oversized.clone()]);
+    result.venue = Some(oversized.clone());
+    result.year = Some(2025);
+    result.cited_by_count = Some(42);
+    result.pdf_url = Some(oversized.clone());
+
+    let formatted = format_tinyfish_output(
+        vec![response],
+        Some(SearchResponseLength::Medium),
+        /*response_byte_budget*/ 1_000,
+    )
+    .expect("metadata-bearing result should fit the output budget");
+
+    assert!(formatted.output.len() <= 1_000);
+    let [result] = formatted.results.as_slice() else {
+        panic!("metadata-bearing result should be retained");
+    };
+    assert_eq!(result["year"], 2025);
+    assert_eq!(result["cited_by_count"], 42);
+    for field in ["date", "publisher", "venue", "pdf_url"] {
+        let value = result[field].as_str().expect("metadata should be a string");
+        assert!(!value.is_empty());
+        assert!(value.len() < oversized.len());
+    }
+    for author in result["authors"]
+        .as_array()
+        .expect("authors should remain an array")
+    {
+        let author = author.as_str().expect("author should be a string");
+        assert!(!author.is_empty());
+        assert!(author.len() < oversized.len());
+    }
+}
+
 #[tokio::test]
 async fn tinyfish_tool_empty_domain_intersection_responds_without_http() {
     let server = MockServer::start().await;
@@ -665,6 +705,13 @@ fn tinyfish_response(query: &str, result_count: usize) -> TinyFishSearchResponse
                 title: format!("{query} title {position}"),
                 snippet: format!("{query} snippet {position}"),
                 url: format!("https://example.com/{query}/{position}"),
+                date: None,
+                publisher: None,
+                authors: None,
+                venue: None,
+                year: None,
+                cited_by_count: None,
+                pdf_url: None,
             })
             .collect(),
         total_results: result_count as u64,
