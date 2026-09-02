@@ -69,6 +69,10 @@ serving limits for the current deployment, not generic capability guarantees.
 export TINYFISH_API_KEY="..."
 ```
 
+```powershell
+$env:TINYFISH_API_KEY = "..."
+```
+
 ```toml
 web_search = "live"
 
