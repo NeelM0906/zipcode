@@ -53,7 +53,7 @@ pub(crate) struct TinyFishSearchResult {
 }
 
 impl TinyFishSearchResult {
-    fn for_each_string_mut(&mut self, mut visit: impl FnMut(&mut String)) {
+    pub(crate) fn for_each_string_mut(&mut self, mut visit: impl FnMut(&mut String)) {
         for value in [
             &mut self.site_name,
             &mut self.title,

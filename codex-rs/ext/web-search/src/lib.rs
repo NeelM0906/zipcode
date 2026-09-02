@@ -3,6 +3,8 @@ mod history;
 mod output;
 mod schema;
 #[cfg_attr(not(test), allow(dead_code))]
+mod tinyfish_client;
+#[cfg_attr(not(test), allow(dead_code))]
 mod tinyfish_output;
 mod tinyfish_request;
 mod tool;
@@ -16,3 +18,7 @@ mod tinyfish_request_tests;
 #[cfg(test)]
 #[path = "tinyfish_output_tests.rs"]
 mod tinyfish_output_tests;
+
+#[cfg(test)]
+#[path = "tinyfish_client_tests.rs"]
+mod tinyfish_client_tests;
