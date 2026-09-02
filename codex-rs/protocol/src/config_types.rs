@@ -434,9 +434,26 @@ impl WebSearchLocation {
     }
 }
 
+#[derive(
+    Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Display, JsonSchema, TS,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum WebSearchProvider {
+    #[default]
+    Model,
+    Tinyfish,
+}
+
+fn web_search_provider_schema_default() -> Option<WebSearchProvider> {
+    Some(WebSearchProvider::Model)
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, JsonSchema, TS)]
 #[schemars(deny_unknown_fields)]
 pub struct WebSearchToolConfig {
+    #[schemars(default = "web_search_provider_schema_default")]
+    pub provider: Option<WebSearchProvider>,
     pub context_size: Option<WebSearchContextSize>,
     pub allowed_domains: Option<Vec<String>>,
     pub location: Option<WebSearchLocation>,
@@ -445,6 +462,7 @@ pub struct WebSearchToolConfig {
 impl WebSearchToolConfig {
     pub fn merge(&self, other: &Self) -> Self {
         Self {
+            provider: other.provider.or(self.provider),
             context_size: other.context_size.or(self.context_size),
             allowed_domains: other
                 .allowed_domains
@@ -490,6 +508,7 @@ pub struct WebSearchUserLocation {
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq, JsonSchema, TS)]
 #[schemars(deny_unknown_fields)]
 pub struct WebSearchConfig {
+    pub provider: WebSearchProvider,
     pub filters: Option<WebSearchFilters>,
     pub user_location: Option<WebSearchUserLocation>,
     pub search_context_size: Option<WebSearchContextSize>,
@@ -510,6 +529,7 @@ impl From<WebSearchLocation> for WebSearchUserLocation {
 impl From<WebSearchToolConfig> for WebSearchConfig {
     fn from(config: WebSearchToolConfig) -> Self {
         Self {
+            provider: config.provider.unwrap_or_default(),
             filters: config
                 .allowed_domains
                 .map(|allowed_domains| WebSearchFilters {
@@ -943,6 +963,7 @@ mod tests {
     #[test]
     fn web_search_tool_config_merge_prefers_overlay_values() {
         let base = WebSearchToolConfig {
+            provider: Some(WebSearchProvider::Tinyfish),
             context_size: Some(WebSearchContextSize::Low),
             allowed_domains: Some(vec!["openai.com".to_string()]),
             location: Some(WebSearchLocation {
@@ -953,6 +974,7 @@ mod tests {
             }),
         };
         let overlay = WebSearchToolConfig {
+            provider: Some(WebSearchProvider::Model),
             context_size: Some(WebSearchContextSize::High),
             allowed_domains: None,
             location: Some(WebSearchLocation {
@@ -964,6 +986,7 @@ mod tests {
         };
 
         let expected = WebSearchToolConfig {
+            provider: Some(WebSearchProvider::Model),
             context_size: Some(WebSearchContextSize::High),
             allowed_domains: Some(vec!["openai.com".to_string()]),
             location: Some(WebSearchLocation {
@@ -975,5 +998,19 @@ mod tests {
         };
 
         assert_eq!(expected, base.merge(&overlay));
+    }
+
+    #[test]
+    fn web_search_provider_schema_defaults_to_model() {
+        let schema = schemars::schema_for!(WebSearchToolConfig);
+        let provider_default = serde_json::to_value(schema)
+            .expect("web-search tool config schema should serialize")
+            .pointer("/properties/provider/default")
+            .cloned();
+
+        assert_eq!(
+            provider_default,
+            Some(serde_json::Value::String("model".to_string()))
+        );
     }
 }

@@ -1,6 +1,7 @@
 use super::*;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters;
+use codex_protocol::config_types::WebSearchProvider;
 use codex_protocol::config_types::WebSearchUserLocation;
 use codex_protocol::config_types::WebSearchUserLocationType;
 use codex_tools::ResponsesApiWebSearchFilters;
@@ -13,6 +14,7 @@ fn web_search_tool_preserves_configured_options() {
         create_web_search_tool(WebSearchToolOptions {
             web_search_mode: Some(WebSearchMode::Live),
             web_search_config: Some(&WebSearchConfig {
+                provider: WebSearchProvider::Model,
                 filters: Some(WebSearchFilters {
                     allowed_domains: Some(vec!["example.com".to_string()]),
                 }),
