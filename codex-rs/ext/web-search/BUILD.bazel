@@ -1,10 +1,26 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:defs.bzl", "codex_rust_crate")
+
+WEB_SEARCH_COMPILE_DATA = [
+    "tinyfish_web_run_description.md",
+    "web_run_description.md",
+]
 
 codex_rust_crate(
     name = "web-search",
-    compile_data = [
-        "tinyfish_web_run_description.md",
-        "web_run_description.md",
-    ],
+    compile_data = WEB_SEARCH_COMPILE_DATA,
     crate_name = "codex_web_search_extension",
+)
+
+rust_library(
+    name = "web-search-test-support",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = WEB_SEARCH_COMPILE_DATA,
+    crate_features = ["test-support"],
+    crate_name = "codex_web_search_extension",
+    edition = "2024",
+    visibility = ["//codex-rs/core:__pkg__"],
+    deps = all_crate_deps(),
 )

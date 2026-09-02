@@ -3,12 +3,12 @@ use codex_api::SearchSettings;
 use codex_extension_api::FunctionCallError;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolOutput;
+use codex_extension_items::ExtensionItem;
 use codex_extension_items::web_search::WebSearchAction;
 use codex_extension_items::web_search::WebSearchItem;
 use codex_http_client::HttpClientFactory;
 use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::TruncationPolicy;
 use codex_protocol::protocol::WebSearchBeginEvent;
 use codex_protocol::protocol::WebSearchEndEvent;
 use codex_utils_redacted_string::RedactedString;
@@ -20,11 +20,12 @@ use super::extension_turn_item;
 use super::record_results_payload_bytes;
 use crate::output::SearchOutput;
 use crate::schema::TinyFishCommands;
+use crate::tinyfish::MAX_TINYFISH_RECENCY_DAYS;
 use crate::tinyfish::TinyFishSearchClient;
 use crate::tinyfish::TinyFishSearchRequest;
 use crate::tinyfish::TinyFishSearchResponse;
 
-const MAX_TINYFISH_RESPONSE_TOKENS: usize = 10_000;
+const MAX_TINYFISH_RESPONSE_BYTES: usize = 10_000;
 
 pub(super) async fn handle_tinyfish_call(
     tool: &WebSearchTool,
@@ -72,12 +73,52 @@ pub(super) async fn handle_tinyfish_call(
         response.query = request.query.clone();
         responses.push(response);
     }
-    let response_byte_budget = call
-        .response_byte_budget(TruncationPolicy::Tokens(MAX_TINYFISH_RESPONSE_TOKENS).byte_budget());
+    let response_byte_budget = call.response_byte_budget(MAX_TINYFISH_RESPONSE_BYTES);
     let formatted =
-        format_tinyfish_output(responses, commands.response_length, response_byte_budget)?;
+        format_tinyfish_output_that_fits(responses, commands.response_length, |formatted| {
+            tinyfish_items_fit(&call, formatted, response_byte_budget)
+        })?;
     record_results_payload_bytes(&formatted.results);
 
+    let (item, event) = tinyfish_completion_items(&call.call_id, &formatted);
+    call.turn_item_emitter
+        .emit_completed(extension_turn_item(item, EventMsg::WebSearchEnd(event)))
+        .await;
+
+    Ok(Box::new(SearchOutput::new(formatted.output)))
+}
+
+fn tinyfish_items_fit(
+    call: &ToolCall<'_>,
+    formatted: &TinyFishFormattedOutput,
+    response_byte_budget: usize,
+) -> Result<bool, FunctionCallError> {
+    let response_item =
+        SearchOutput::new(formatted.output.clone()).to_response_item(&call.call_id, &call.payload);
+    let (item, event) = tinyfish_completion_items(&call.call_id, formatted);
+    let extension_item = ExtensionItem::WebSearch(item);
+    let event = EventMsg::WebSearchEnd(event);
+
+    for value in [
+        serde_json::to_vec(&response_item),
+        serde_json::to_vec(&extension_item),
+        serde_json::to_vec(&event),
+    ] {
+        if value
+            .map_err(|err| FunctionCallError::Fatal(err.to_string()))?
+            .len()
+            > response_byte_budget
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn tinyfish_completion_items(
+    call_id: &str,
+    formatted: &TinyFishFormattedOutput,
+) -> (WebSearchItem, WebSearchEndEvent) {
     let (query, queries) = match formatted.queries.as_slice() {
         [query] => (Some(query.clone()), None),
         queries => (None, Some(queries.to_vec())),
@@ -88,24 +129,20 @@ pub(super) async fn handle_tinyfish_call(
     };
     let legacy_action = CoreWebSearchAction::Search { query, queries };
     let query = codex_core::web_search_action_detail(&legacy_action);
-    call.turn_item_emitter
-        .emit_completed(extension_turn_item(
-            WebSearchItem {
-                id: call.call_id.clone(),
-                query: query.clone(),
-                action: Some(command_action),
-                results: Some(formatted.results.clone()),
-            },
-            EventMsg::WebSearchEnd(WebSearchEndEvent {
-                call_id: call.call_id.clone(),
-                query,
-                action: legacy_action,
-                results: Some(formatted.results),
-            }),
-        ))
-        .await;
-
-    Ok(Box::new(SearchOutput::new(formatted.output)))
+    (
+        WebSearchItem {
+            id: call_id.to_string(),
+            query: query.clone(),
+            action: Some(command_action),
+            results: Some(formatted.results.clone()),
+        },
+        WebSearchEndEvent {
+            call_id: call_id.to_string(),
+            query,
+            action: legacy_action,
+            results: Some(formatted.results.clone()),
+        },
+    )
 }
 
 fn parse_tinyfish_commands(call: &ToolCall<'_>) -> Result<TinyFishCommands, FunctionCallError> {
@@ -148,10 +185,12 @@ pub(super) fn prepare_tinyfish_requests(
             let domains = effective_domains(configured_domains, query.domains.as_deref())?;
             if query
                 .recency
-                .is_some_and(|days| days.checked_mul(24 * 60).is_none())
+                .is_some_and(|days| !(1..=MAX_TINYFISH_RECENCY_DAYS).contains(&days))
             {
                 return Err(FunctionCallError::RespondToModel(
-                    "TinyFish web search recency is too large".to_string(),
+                    format!(
+                        "TinyFish web search recency must be between 1 and {MAX_TINYFISH_RECENCY_DAYS} days"
+                    ),
                 ));
             }
             Ok(TinyFishSearchRequest {
@@ -250,11 +289,25 @@ impl Serialize for BoundedString<'_> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn format_tinyfish_output(
-    mut responses: Vec<TinyFishSearchResponse>,
+    responses: Vec<TinyFishSearchResponse>,
     response_length: Option<SearchResponseLength>,
     response_byte_budget: usize,
 ) -> Result<TinyFishFormattedOutput, FunctionCallError> {
+    format_tinyfish_output_that_fits(responses, response_length, |formatted| {
+        Ok(formatted.output.len() <= response_byte_budget)
+    })
+}
+
+fn format_tinyfish_output_that_fits<F>(
+    mut responses: Vec<TinyFishSearchResponse>,
+    response_length: Option<SearchResponseLength>,
+    mut fits: F,
+) -> Result<TinyFishFormattedOutput, FunctionCallError>
+where
+    F: FnMut(&TinyFishFormattedOutput) -> Result<bool, FunctionCallError>,
+{
     let result_limit = match response_length {
         Some(SearchResponseLength::Short) => 5,
         Some(SearchResponseLength::Medium | SearchResponseLength::Long) | None => 10,
@@ -263,14 +316,31 @@ pub(super) fn format_tinyfish_output(
         response.results.truncate(result_limit);
     }
 
-    let output = serialize_tinyfish_output(&responses, usize::MAX)?;
-    if output.len() <= response_byte_budget {
-        return build_tinyfish_formatted_output(responses, output);
+    let unbounded = build_tinyfish_formatted_output_with_budget(&responses, usize::MAX)?;
+    if fits(&unbounded)? {
+        return Ok(unbounded);
     }
-    drop(output);
 
-    let mut best_output = serialize_tinyfish_output(&responses, 0)?;
-    while best_output.len() > response_byte_budget {
+    loop {
+        let minimum = build_tinyfish_formatted_output_with_budget(&responses, 0)?;
+        if fits(&minimum)? {
+            let mut best = minimum;
+            let mut lower_bound = 1;
+            let mut upper_bound = max_tinyfish_field_bytes(&responses);
+            while lower_bound <= upper_bound {
+                let field_byte_budget = lower_bound + (upper_bound - lower_bound) / 2;
+                let candidate =
+                    build_tinyfish_formatted_output_with_budget(&responses, field_byte_budget)?;
+                if fits(&candidate)? {
+                    best = candidate;
+                    lower_bound = field_byte_budget.saturating_add(1);
+                } else {
+                    upper_bound = field_byte_budget - 1;
+                }
+            }
+            return Ok(best);
+        }
+
         let Some(response) = responses
             .iter_mut()
             .rev()
@@ -281,10 +351,21 @@ pub(super) fn format_tinyfish_output(
             ));
         };
         response.results.pop();
-        best_output = serialize_tinyfish_output(&responses, 0)?;
     }
+}
 
-    let max_field_bytes = responses
+fn build_tinyfish_formatted_output_with_budget(
+    responses: &[TinyFishSearchResponse],
+    field_byte_budget: usize,
+) -> Result<TinyFishFormattedOutput, FunctionCallError> {
+    let output = serialize_tinyfish_output(responses, field_byte_budget)?;
+    let mut bounded_responses = responses.to_vec();
+    truncate_tinyfish_responses(&mut bounded_responses, field_byte_budget);
+    build_tinyfish_formatted_output(bounded_responses, output)
+}
+
+fn max_tinyfish_field_bytes(responses: &[TinyFishSearchResponse]) -> usize {
+    responses
         .iter()
         .flat_map(|response| {
             std::iter::once(response.query.len()).chain(response.results.iter().flat_map(
@@ -306,26 +387,7 @@ pub(super) fn format_tinyfish_output(
             ))
         })
         .max()
-        .unwrap_or(0);
-    let mut lower_bound = 0;
-    let mut upper_bound = max_field_bytes;
-    let mut best_field_byte_budget = 0;
-    while lower_bound <= upper_bound {
-        let field_byte_budget = lower_bound + (upper_bound - lower_bound) / 2;
-        let candidate = serialize_tinyfish_output(&responses, field_byte_budget)?;
-        if candidate.len() <= response_byte_budget {
-            best_output = candidate;
-            best_field_byte_budget = field_byte_budget;
-            lower_bound = field_byte_budget.saturating_add(1);
-        } else if field_byte_budget == 0 {
-            break;
-        } else {
-            upper_bound = field_byte_budget - 1;
-        }
-    }
-
-    truncate_tinyfish_responses(&mut responses, best_field_byte_budget);
-    build_tinyfish_formatted_output(responses, best_output)
+        .unwrap_or(0)
 }
 
 fn truncate_tinyfish_responses(responses: &mut [TinyFishSearchResponse], field_byte_budget: usize) {

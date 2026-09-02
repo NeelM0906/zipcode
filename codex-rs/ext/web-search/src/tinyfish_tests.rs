@@ -1,3 +1,4 @@
+use std::error::Error as StdError;
 use std::io::Write;
 
 use codex_http_client::HttpClientFactory;
@@ -32,12 +33,16 @@ async fn tinyfish_search_sends_documented_request() {
     Mock::given(method("GET"))
         .and(path("/"))
         .and(header("X-API-Key", "test-tinyfish-key"))
+        .and(header("Accept-Encoding", "gzip"))
         .and(query_param("query", "rust async traits"))
         .and(query_param("include_domains", "doc.rust-lang.org,docs.rs"))
-        .and(query_param("recency_minutes", "43200"))
+        .and(query_param("recency_minutes", "5256000"))
         .and(query_param("location", "US"))
-        .respond_with(ResponseTemplate::new(/*status*/ 200).set_body_raw(
-            r#"{
+        .respond_with(
+            ResponseTemplate::new(/*status*/ 200)
+                .set_body_raw(
+                    gzip_bytes(
+                        r#"{
                 "query": "rust async traits",
                 "results": [
                     {
@@ -57,9 +62,13 @@ async fn tinyfish_search_sends_documented_request() {
                 ],
                 "total_results": 2,
                 "page": 0
-            }"#,
-            "application/json",
-        ))
+            }"#
+                        .as_bytes(),
+                    ),
+                    "application/json",
+                )
+                .insert_header("Content-Encoding", "gzip"),
+        )
         .mount(&server)
         .await;
 
@@ -73,7 +82,7 @@ async fn tinyfish_search_sends_documented_request() {
         .search(&TinyFishSearchRequest {
             query: "rust async traits".to_string(),
             domains: Some(vec!["doc.rust-lang.org".to_string(), "docs.rs".to_string()]),
-            recency_days: Some(30),
+            recency_days: Some(3_650),
             location: Some("US".to_string()),
         })
         .await
@@ -200,11 +209,7 @@ async fn tinyfish_success_body_rejects_chunked_unknown_length_over_one_mibibyte(
 #[tokio::test]
 async fn tinyfish_success_body_rejects_decoded_gzip_over_one_mibibyte() {
     let server = MockServer::start().await;
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
-    encoder
-        .write_all(oversized_success_json().as_bytes())
-        .expect("fixture should compress");
-    let compressed = encoder.finish().expect("fixture should finish compressing");
+    let compressed = gzip_bytes(oversized_success_json().as_bytes());
     assert!(compressed.len() < 1_048_576);
     Mock::given(method("GET"))
         .respond_with(
@@ -222,6 +227,66 @@ async fn tinyfish_success_body_rejects_decoded_gzip_over_one_mibibyte() {
         .expect_err("decoded oversized success body should fail");
 
     assert_success_body_too_large(&error);
+}
+
+#[tokio::test]
+async fn tinyfish_success_body_rejects_unsupported_content_encoding_without_reflecting_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(/*status*/ 200)
+                .insert_header("Content-Encoding", format!("br-{TEST_API_KEY}").as_str())
+                .set_body_json(serde_json::json!({
+                    "query": "bounded transport",
+                    "results": [],
+                    "total_results": 0
+                })),
+        )
+        .mount(&server)
+        .await;
+
+    let error = test_client(&server)
+        .search(&test_request())
+        .await
+        .expect_err("unsupported response encoding should fail");
+
+    assert_eq!(
+        error.to_string(),
+        "TinyFish web search returned an unsupported content encoding"
+    );
+    assert!(!format!("{error:?}").contains(TEST_API_KEY));
+}
+
+#[tokio::test]
+async fn tinyfish_malformed_typed_response_does_not_expose_a_reflected_api_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(/*status*/ 200).set_body_json(serde_json::json!({
+                "query": "bounded transport",
+                "results": [],
+                "total_results": TEST_API_KEY
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let error = test_client(&server)
+        .search(&test_request())
+        .await
+        .expect_err("malformed typed response should fail");
+    assert_eq!(
+        error.to_string(),
+        "TinyFish web search returned invalid JSON"
+    );
+
+    let mut rendered_chain = format!("{error}\n{error:?}");
+    let mut source = error.source();
+    while let Some(next) = source {
+        rendered_chain.push_str(&format!("\n{next}\n{next:?}"));
+        source = next.source();
+    }
+    assert!(!rendered_chain.contains(TEST_API_KEY));
 }
 
 #[tokio::test]
@@ -491,7 +556,13 @@ async fn tinyfish_error_body_at_exact_limit_is_not_marked_truncated() {
 }
 
 #[tokio::test]
-async fn tinyfish_error_recency_overflow_prevents_the_request() {
+async fn tinyfish_error_invalid_recency_prevents_the_request() {
+    for days in [0, 3_651, u64::MAX] {
+        assert_recency_rejected_before_network(days).await;
+    }
+}
+
+async fn assert_recency_rejected_before_network(days: u64) {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(/*status*/ 200))
@@ -499,19 +570,16 @@ async fn tinyfish_error_recency_overflow_prevents_the_request() {
         .mount(&server)
         .await;
     let mut request = test_request();
-    request.recency_days = Some(u64::MAX);
+    request.recency_days = Some(days);
 
     let error = test_client(&server)
         .search(&request)
         .await
-        .expect_err("overflow should fail before sending");
+        .expect_err("out-of-range recency should fail before sending");
 
     assert_eq!(
         error.to_string(),
-        format!(
-            "TinyFish recency_days value {max} is too large",
-            max = u64::MAX
-        )
+        format!("TinyFish recency_days value {days} must be between 1 and 3650")
     );
     assert!(
         server
@@ -560,6 +628,12 @@ fn oversized_success_json() -> String {
         r#"{{"query":"bounded success","results":[],"total_results":0,"page":0,"padding":"{TEST_API_KEY}-padding-marker{}"}}"#,
         "x".repeat(1_048_576)
     )
+}
+
+fn gzip_bytes(body: &[u8]) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(body).expect("fixture should compress");
+    encoder.finish().expect("fixture should finish compressing")
 }
 
 fn assert_success_body_too_large(error: &TinyFishError) {

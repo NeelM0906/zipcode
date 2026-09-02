@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::time::Duration;
 
 use codex_http_client::BuildRouteAwareHttpClientError;
@@ -7,16 +8,20 @@ use codex_http_client::HttpClientBuilder;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::HttpError;
 use codex_utils_redacted_string::RedactedString;
+use flate2::read::MultiGzDecoder;
+use http::header::ACCEPT_ENCODING;
+use http::header::CONTENT_ENCODING;
 use serde::Deserialize;
 use serde::Serialize;
 use thiserror::Error;
 use url::Url;
 
 pub(crate) const TINYFISH_SEARCH_ENDPOINT: &str = "https://api.search.tinyfish.ai";
-pub(crate) const TINYFISH_API_KEY_ENV: &str = "TINYFISH_API_KEY";
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ERROR_BODY_BYTES: usize = 1024;
 const MAX_SUCCESS_BODY_BYTES: usize = 1024 * 1024;
+const MINUTES_PER_DAY: u64 = 24 * 60;
+pub(crate) const MAX_TINYFISH_RECENCY_DAYS: u64 = 3_650;
 
 #[derive(Clone)]
 pub(crate) struct TinyFishSearchClient {
@@ -95,18 +100,19 @@ pub(crate) enum TinyFishError {
     },
     #[error("TinyFish web search response exceeded 1048576 bytes")]
     ResponseTooLarge,
+    #[error("TinyFish web search returned an unsupported content encoding")]
+    UnsupportedContentEncoding,
+    #[error("TinyFish web search returned invalid gzip data")]
+    ResponseDecompression,
     #[error("failed to read TinyFish web search response")]
     ResponseRead {
         #[source]
         source: HttpError,
     },
     #[error("TinyFish web search returned invalid JSON")]
-    ResponseDecode {
-        #[source]
-        source: serde_json::Error,
-    },
-    #[error("TinyFish recency_days value {days} is too large")]
-    RecencyOverflow { days: u64 },
+    ResponseDecode,
+    #[error("TinyFish recency_days value {days} must be between 1 and 3650")]
+    RecencyOutOfRange { days: u64 },
 }
 
 #[derive(Serialize)]
@@ -149,8 +155,10 @@ impl TinyFishSearchClient {
         let recency_minutes = request
             .recency_days
             .map(|days| {
-                days.checked_mul(24 * 60)
-                    .ok_or(TinyFishError::RecencyOverflow { days })
+                if !(1..=MAX_TINYFISH_RECENCY_DAYS).contains(&days) {
+                    return Err(TinyFishError::RecencyOutOfRange { days });
+                }
+                Ok(days * MINUTES_PER_DAY)
             })
             .transpose()?;
         let query = TinyFishWireRequest {
@@ -163,6 +171,7 @@ impl TinyFishSearchClient {
             .client
             .get(self.endpoint.clone())
             .header("X-API-Key", self.api_key.as_str())
+            .header(ACCEPT_ENCODING, "gzip")
             .query(&query)
             .timeout(SEARCH_TIMEOUT)
             .send()
@@ -207,29 +216,124 @@ impl TinyFishSearchClient {
             };
         }
 
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_SUCCESS_BODY_BYTES as u64)
-        {
-            return Err(TinyFishError::ResponseTooLarge);
-        }
+        let encoding = response_encoding(&response)?;
+        let body = read_success_body(response).await?;
+        let body = match encoding {
+            ResponseEncoding::Identity => body,
+            ResponseEncoding::Gzip => decode_gzip_body(&body)?,
+        };
 
-        let mut response = response;
-        let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|source| TinyFishError::ResponseRead { source })?
-        {
-            let Some(next_length) = body.len().checked_add(chunk.len()) else {
-                return Err(TinyFishError::ResponseTooLarge);
-            };
-            if next_length > MAX_SUCCESS_BODY_BYTES {
-                return Err(TinyFishError::ResponseTooLarge);
-            }
-            body.extend_from_slice(&chunk);
-        }
+        let mut response: TinyFishSearchResponse =
+            serde_json::from_slice(&body).map_err(|_| TinyFishError::ResponseDecode)?;
+        redact_api_key(&mut response, self.api_key.as_str());
+        Ok(response)
+    }
+}
 
-        serde_json::from_slice(&body).map_err(|source| TinyFishError::ResponseDecode { source })
+#[derive(Clone, Copy)]
+enum ResponseEncoding {
+    Identity,
+    Gzip,
+}
+
+fn response_encoding(
+    response: &codex_http_client::HttpResponse,
+) -> Result<ResponseEncoding, TinyFishError> {
+    let mut values = response.headers().get_all(CONTENT_ENCODING).iter();
+    let Some(value) = values.next() else {
+        return Ok(ResponseEncoding::Identity);
+    };
+    if values.next().is_some() {
+        return Err(TinyFishError::UnsupportedContentEncoding);
+    }
+    match value.to_str().ok().map(str::trim) {
+        Some(value) if value.eq_ignore_ascii_case("identity") => Ok(ResponseEncoding::Identity),
+        Some(value) if value.eq_ignore_ascii_case("gzip") => Ok(ResponseEncoding::Gzip),
+        _ => Err(TinyFishError::UnsupportedContentEncoding),
+    }
+}
+
+async fn read_success_body(
+    mut response: codex_http_client::HttpResponse,
+) -> Result<Vec<u8>, TinyFishError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_SUCCESS_BODY_BYTES as u64)
+    {
+        return Err(TinyFishError::ResponseTooLarge);
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|source| TinyFishError::ResponseRead { source })?
+    {
+        append_bounded(&mut body, &chunk)?;
+    }
+    Ok(body)
+}
+
+fn decode_gzip_body(body: &[u8]) -> Result<Vec<u8>, TinyFishError> {
+    let mut decoder = MultiGzDecoder::new(body);
+    let mut decoded = Vec::new();
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let bytes_read = decoder
+            .read(&mut buffer)
+            .map_err(|_| TinyFishError::ResponseDecompression)?;
+        if bytes_read == 0 {
+            return Ok(decoded);
+        }
+        append_bounded(&mut decoded, &buffer[..bytes_read])?;
+    }
+}
+
+fn append_bounded(body: &mut Vec<u8>, bytes: &[u8]) -> Result<(), TinyFishError> {
+    let Some(next_length) = body.len().checked_add(bytes.len()) else {
+        return Err(TinyFishError::ResponseTooLarge);
+    };
+    if next_length > MAX_SUCCESS_BODY_BYTES {
+        return Err(TinyFishError::ResponseTooLarge);
+    }
+    body.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn redact_api_key(response: &mut TinyFishSearchResponse, api_key: &str) {
+    if api_key.is_empty() {
+        return;
+    }
+
+    redact_string(&mut response.query, api_key);
+    for result in &mut response.results {
+        for value in [
+            &mut result.site_name,
+            &mut result.title,
+            &mut result.snippet,
+            &mut result.url,
+        ] {
+            redact_string(value, api_key);
+        }
+        for value in [
+            &mut result.date,
+            &mut result.publisher,
+            &mut result.venue,
+            &mut result.pdf_url,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            redact_string(value, api_key);
+        }
+        for author in result.authors.iter_mut().flatten() {
+            redact_string(author, api_key);
+        }
+    }
+}
+
+fn redact_string(value: &mut String, api_key: &str) {
+    if value.contains(api_key) {
+        *value = value.replace(api_key, "[REDACTED]");
     }
 }

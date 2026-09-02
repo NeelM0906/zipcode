@@ -23,16 +23,25 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchProvider;
+use codex_protocol::shell_environment::TINYFISH_API_KEY_ENV_VAR;
 use codex_utils_redacted_string::RedactedString;
 use url::Url;
 
-use crate::tinyfish::TINYFISH_API_KEY_ENV;
 use crate::tinyfish::TINYFISH_SEARCH_ENDPOINT;
 use crate::tool::WebSearchTool;
 
 #[derive(Clone)]
 struct WebSearchExtension {
     auth_manager: Arc<AuthManager>,
+    #[cfg(feature = "test-support")]
+    tinyfish_test_backend: Option<TinyfishTestBackend>,
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Clone)]
+struct TinyfishTestBackend {
+    endpoint: Url,
+    api_key: RedactedString,
 }
 
 #[derive(Clone)]
@@ -72,7 +81,7 @@ impl From<&Config> for WebSearchExtensionConfig {
                     Ok(endpoint) => endpoint,
                     Err(err) => panic!("TinyFish search endpoint should be a valid URL: {err}"),
                 },
-                api_key: std::env::var(TINYFISH_API_KEY_ENV)
+                api_key: std::env::var(TINYFISH_API_KEY_ENV_VAR)
                     .ok()
                     .filter(|api_key| !api_key.trim().is_empty())
                     .map(RedactedString::from),
@@ -87,6 +96,28 @@ impl From<&Config> for WebSearchExtensionConfig {
             backend,
             settings: search_settings(config, web_search_mode),
         }
+    }
+}
+
+impl WebSearchExtension {
+    fn config(&self, config: &Config) -> WebSearchExtensionConfig {
+        #[cfg(feature = "test-support")]
+        let extension_config = {
+            let mut extension_config = WebSearchExtensionConfig::from(config);
+            if let Some(test_backend) = self.tinyfish_test_backend.as_ref()
+                && matches!(&extension_config.backend, WebSearchBackend::Tinyfish { .. })
+            {
+                extension_config.backend = WebSearchBackend::Tinyfish {
+                    http_client_factory: config.http_client_factory(),
+                    endpoint: test_backend.endpoint.clone(),
+                    api_key: Some(test_backend.api_key.clone()),
+                };
+            }
+            extension_config
+        };
+        #[cfg(not(feature = "test-support"))]
+        let extension_config = WebSearchExtensionConfig::from(config);
+        extension_config
     }
 }
 
@@ -151,9 +182,7 @@ impl ThreadLifecycleContributor<Config> for WebSearchExtension {
         input: ThreadStartInput<'a, Config>,
     ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
-            input
-                .thread_store
-                .insert(WebSearchExtensionConfig::from(input.config));
+            input.thread_store.insert(self.config(input.config));
         })
     }
 }
@@ -166,7 +195,7 @@ impl ConfigContributor<Config> for WebSearchExtension {
         _previous_config: &Config,
         new_config: &Config,
     ) {
-        thread_store.insert(WebSearchExtensionConfig::from(new_config));
+        thread_store.insert(self.config(new_config));
     }
 }
 
@@ -198,7 +227,28 @@ impl ToolContributor for WebSearchExtension {
 }
 
 pub fn install(registry: &mut ExtensionRegistryBuilder<Config>, auth_manager: Arc<AuthManager>) {
-    let extension = Arc::new(WebSearchExtension { auth_manager });
+    let extension = Arc::new(WebSearchExtension {
+        auth_manager,
+        #[cfg(feature = "test-support")]
+        tinyfish_test_backend: None,
+    });
+    registry.thread_lifecycle_contributor(extension.clone());
+    registry.config_contributor(extension.clone());
+    registry.tool_contributor(extension);
+}
+
+#[cfg(feature = "test-support")]
+/// Installs web search with an injected TinyFish backend for integration tests.
+pub fn install_tinyfish_for_test(
+    registry: &mut ExtensionRegistryBuilder<Config>,
+    auth_manager: Arc<AuthManager>,
+    endpoint: Url,
+    api_key: RedactedString,
+) {
+    let extension = Arc::new(WebSearchExtension {
+        auth_manager,
+        tinyfish_test_backend: Some(TinyfishTestBackend { endpoint, api_key }),
+    });
     registry.thread_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
     registry.tool_contributor(extension);

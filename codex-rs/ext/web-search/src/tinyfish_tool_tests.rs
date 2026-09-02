@@ -312,25 +312,33 @@ async fn tinyfish_tool_blank_key_responds_to_model_without_http() {
 }
 
 #[tokio::test]
-async fn tinyfish_tool_recency_overflow_responds_to_model_without_http_or_events() {
+async fn tinyfish_tool_invalid_recency_responds_to_model_without_http_or_events() {
     let server = MockServer::start().await;
     let tool = tinyfish_tool(&server, Some("test-key"), SearchSettings::default());
     let emitter = Arc::new(RecordingTurnItemEmitter::default());
 
-    let result = tool
-        .handle_call(tool_call(
-            serde_json::json!({
-                "search_query": [{"q": "rust", "recency": u64::MAX}],
-            }),
-            ConversationHistory::default(),
-            Arc::clone(&emitter) as Arc<dyn TurnItemEmitter>,
-        ))
-        .await;
-    let Err(error) = result else {
-        panic!("overflowing recency should be model-visible");
-    };
+    for recency in [0, 3_651, u64::MAX] {
+        let result = tool
+            .handle_call(tool_call(
+                serde_json::json!({
+                    "search_query": [{"q": "rust", "recency": recency}],
+                }),
+                ConversationHistory::default(),
+                Arc::clone(&emitter) as Arc<dyn TurnItemEmitter>,
+            ))
+            .await;
+        let Err(error) = result else {
+            panic!("out-of-range recency should be model-visible");
+        };
 
-    assert!(matches!(error, FunctionCallError::RespondToModel(_)));
+        assert_eq!(
+            error,
+            FunctionCallError::RespondToModel(
+                "TinyFish web search recency must be between 1 and 3650 days".to_string()
+            )
+        );
+    }
+
     assert!(
         server
             .received_requests()
@@ -344,7 +352,7 @@ async fn tinyfish_tool_recency_overflow_responds_to_model_without_http_or_events
 
 #[tokio::test]
 async fn tinyfish_tool_code_mode_bounds_oversized_results_for_output_and_events() {
-    const MAX_MODEL_CONTEXT_TOKENS: usize = 10_000;
+    const MAX_SERIALIZED_RESPONSE_BYTES: usize = 10_000;
     let server = MockServer::start().await;
     let oversized = "provider-data".repeat(10_000);
     for query in ["first query", "second query"] {
@@ -410,8 +418,7 @@ async fn tinyfish_tool_code_mode_bounds_oversized_results_for_output_and_events(
     else {
         panic!("web search should return one text item");
     };
-    let response_budget = TruncationPolicy::Tokens(MAX_MODEL_CONTEXT_TOKENS).byte_budget();
-    assert!(text.len() <= response_budget);
+    assert!(text.len() <= MAX_SERIALIZED_RESPONSE_BYTES);
     let parsed: serde_json::Value =
         serde_json::from_str(text).expect("bounded output should remain valid JSON");
     assert_eq!(
@@ -450,12 +457,144 @@ async fn tinyfish_tool_code_mode_bounds_oversized_results_for_output_and_events(
         serde_json::to_vec(item.results.as_ref().expect("event results"))
             .expect("event results should serialize")
             .len()
-            <= response_budget
+            <= MAX_SERIALIZED_RESPONSE_BYTES
     );
     assert!(matches!(
         completed[0].legacy_events.as_slice(),
         [EventMsg::WebSearchEnd(event)] if event.results.as_ref() == Some(&flattened_results)
     ));
+}
+
+#[tokio::test]
+async fn tinyfish_tool_bounds_each_serialized_model_and_event_item() {
+    const MAX_SERIALIZED_ITEM_BYTES: usize = 10_000;
+    let server = MockServer::start().await;
+    let oversized_query = "q".repeat(20_000);
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(/*status*/ 200).set_body_json(serde_json::json!({
+                "query": "provider query must be ignored",
+                "results": [],
+                "total_results": 0,
+                "page": 0,
+            })),
+        )
+        .mount(&server)
+        .await;
+    let tool = tinyfish_tool(&server, Some("test-key"), SearchSettings::default());
+    let emitter = Arc::new(RecordingTurnItemEmitter::default());
+    let mut call = tool_call(
+        serde_json::json!({
+            "search_query": [{"q": oversized_query}],
+        }),
+        ConversationHistory::default(),
+        Arc::clone(&emitter) as Arc<dyn TurnItemEmitter>,
+    );
+    call.source = ToolCallSource::CodeMode {
+        cell_id: "cell-1".to_string(),
+        runtime_tool_call_id: "runtime-call-1".to_string(),
+    };
+
+    let output = tool
+        .handle_call(call)
+        .await
+        .expect("oversized query should be safely bounded");
+    let response_item = output.to_response_item(
+        "call-1",
+        &ToolPayload::Function {
+            arguments: "{}".to_string(),
+        },
+    );
+    assert!(
+        serde_json::to_vec(&response_item)
+            .expect("response item should serialize")
+            .len()
+            <= MAX_SERIALIZED_ITEM_BYTES
+    );
+
+    let completed = emitter.completed.lock().expect("completed lock");
+    assert_eq!(completed.len(), 1);
+    assert!(
+        serde_json::to_vec(&completed[0].item)
+            .expect("extension item should serialize")
+            .len()
+            <= MAX_SERIALIZED_ITEM_BYTES
+    );
+    assert!(
+        serde_json::to_vec(&completed[0].legacy_events[0])
+            .expect("legacy event should serialize")
+            .len()
+            <= MAX_SERIALIZED_ITEM_BYTES
+    );
+}
+
+#[tokio::test]
+async fn tinyfish_tool_redacts_api_key_echoed_in_success_results() {
+    const API_KEY: &str = "tf-private-api-key";
+    let server = MockServer::start().await;
+    let echoed = format!("provider echoed {API_KEY} in a result");
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .and(query_param("query", "rust"))
+        .respond_with(
+            ResponseTemplate::new(/*status*/ 200).set_body_json(serde_json::json!({
+                "query": echoed,
+                "results": [{
+                    "position": 1,
+                    "site_name": echoed,
+                    "title": echoed,
+                    "snippet": echoed,
+                    "url": echoed,
+                    "date": echoed,
+                    "publisher": echoed,
+                    "authors": [echoed],
+                    "venue": echoed,
+                    "year": 2026,
+                    "cited_by_count": 1,
+                    "pdf_url": echoed,
+                }],
+                "total_results": 1,
+                "page": 0,
+            })),
+        )
+        .mount(&server)
+        .await;
+    let tool = tinyfish_tool(&server, Some(API_KEY), SearchSettings::default());
+    let emitter = Arc::new(RecordingTurnItemEmitter::default());
+
+    let output = tool
+        .handle_call(tool_call(
+            serde_json::json!({"search_query": [{"q": "rust"}]}),
+            ConversationHistory::default(),
+            Arc::clone(&emitter) as Arc<dyn TurnItemEmitter>,
+        ))
+        .await
+        .expect("TinyFish search should redact echoed credentials");
+    let response_item = output.to_response_item(
+        "call-1",
+        &ToolPayload::Function {
+            arguments: "{}".to_string(),
+        },
+    );
+    assert!(
+        !serde_json::to_string(&response_item)
+            .expect("response item should serialize")
+            .contains(API_KEY)
+    );
+
+    let completed = emitter.completed.lock().expect("completed lock");
+    assert_eq!(completed.len(), 1);
+    assert!(
+        !serde_json::to_string(&completed[0].item)
+            .expect("extension item should serialize")
+            .contains(API_KEY)
+    );
+    assert!(
+        !serde_json::to_string(&completed[0].legacy_events[0])
+            .expect("legacy event should serialize")
+            .contains(API_KEY)
+    );
 }
 
 #[tokio::test]

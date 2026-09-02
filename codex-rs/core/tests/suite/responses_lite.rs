@@ -21,6 +21,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use codex_web_search_extension::install as install_web_search_extension;
+use codex_web_search_extension::install_tinyfish_for_test;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::apps_test_server::SEARCH_CALENDAR_CREATE_TOOL;
 use core_test_support::apps_test_server::SEARCH_CALENDAR_NAMESPACE;
@@ -32,6 +33,14 @@ use core_test_support::wait_for_event;
 use core_test_support::wait_for_mcp_server;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
+use url::Url;
+use wiremock::Mock;
+use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::header;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
+use wiremock::matchers::query_param;
 
 const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
 
@@ -472,6 +481,119 @@ async fn responses_lite_exposes_tinyfish_web_search() -> Result<()> {
     let tools = additional_tools(&body)?;
     assert!(has_namespaced_tool(tools, "web", "run"));
     assert!(!has_hosted_tool(tools, "web_search"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const CALL_ID: &str = "tinyfish-web-run";
+    const API_KEY: &str = "redacted-tinyfish-test-key";
+    const QUERY: &str = "rust async traits";
+
+    let server = responses::start_mock_server().await;
+    let tinyfish_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .and(header("X-API-Key", API_KEY))
+        .and(query_param("query", QUERY))
+        .respond_with(
+            ResponseTemplate::new(/*status*/ 200).set_body_json(serde_json::json!({
+                "query": "provider-normalized query",
+                "results": [{
+                    "position": 1,
+                    "site_name": "Rust Documentation",
+                    "title": "Async functions in traits",
+                    "snippet": "Native async functions in traits are supported.",
+                    "url": "https://doc.rust-lang.org/reference/items/traits.html",
+                }],
+                "total_results": 1,
+                "page": 0,
+            })),
+        )
+        .expect(1)
+        .mount(&tinyfish_server)
+        .await;
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-1"),
+                responses::ev_function_call_with_namespace(
+                    CALL_ID,
+                    "web",
+                    "run",
+                    &serde_json::json!({
+                        "search_query": [{"q": QUERY}],
+                        "response_length": "short",
+                    })
+                    .to_string(),
+                ),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("msg-1", "Search complete."),
+                responses::ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    let auth = CodexAuth::from_api_key("dummy");
+    let auth_manager = codex_core::test_support::auth_manager_from_auth(auth.clone());
+    let mut extension_builder = ExtensionRegistryBuilder::<Config>::new();
+    install_tinyfish_for_test(
+        &mut extension_builder,
+        auth_manager,
+        Url::parse(&tinyfish_server.uri()).context("mock TinyFish endpoint should be valid")?,
+        API_KEY.into(),
+    );
+    let mut builder = test_codex()
+        .with_auth(auth)
+        .with_extensions(Arc::new(extension_builder.build()))
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            configure_responses_tools(config);
+            let web_search_config = config
+                .web_search_config
+                .get_or_insert_with(Default::default);
+            web_search_config.provider = WebSearchProvider::Tinyfish;
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    test.submit_turn("Search for Rust async traits").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
+    let (output, success) = requests[1]
+        .function_call_output_content_and_success(CALL_ID)
+        .context("TinyFish web.run should return a function call output")?;
+    assert_eq!(success, None);
+    let output: Value = serde_json::from_str(
+        output
+            .as_deref()
+            .context("TinyFish web.run output should contain normalized JSON")?,
+    )?;
+    assert_eq!(
+        output,
+        serde_json::json!({
+            "provider": "tinyfish",
+            "searches": [{
+                "query": QUERY,
+                "results": [{
+                    "position": 1,
+                    "site_name": "Rust Documentation",
+                    "title": "Async functions in traits",
+                    "snippet": "Native async functions in traits are supported.",
+                    "url": "https://doc.rust-lang.org/reference/items/traits.html",
+                }],
+            }],
+        })
+    );
 
     Ok(())
 }

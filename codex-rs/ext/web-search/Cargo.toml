@@ -12,6 +12,9 @@ doctest = false
 [lints]
 workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 codex-api = { workspace = true }
 codex-core = { workspace = true }
@@ -25,8 +28,8 @@ codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
 codex-tools = { workspace = true }
 codex-utils-redacted-string = { workspace = true }
+flate2 = { workspace = true }
 http = { workspace = true }
-reqwest = { workspace = true, features = ["gzip"] }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -35,7 +38,6 @@ tokio = { workspace = true, features = ["time"] }
 url = { workspace = true }
 
 [dev-dependencies]
-flate2 = { workspace = true }
 pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }
 wiremock = { workspace = true }
