@@ -60,6 +60,25 @@ fn parse_tool_input_schema_preserves_array_item_bounds() {
 }
 
 #[test]
+fn parse_tool_input_schema_infers_array_from_item_bounds() {
+    let schema = parse_tool_input_schema_without_compaction(&serde_json::json!({
+        "minItems": 1,
+        "maxItems": 4,
+    }))
+    .expect("parse schema");
+
+    assert_eq!(
+        serde_json::to_value(schema).expect("serialize schema"),
+        serde_json::json!({
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "maxItems": 4,
+        })
+    );
+}
+
+#[test]
 fn parse_tool_input_schema_infers_object_shape_and_defaults_properties() {
     // Example schema shape:
     // {

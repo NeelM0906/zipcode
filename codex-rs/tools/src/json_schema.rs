@@ -523,7 +523,11 @@ fn sanitize_json_schema(value: &mut JsonValue) {
                     || map.contains_key("additionalProperties")
                 {
                     schema_types.push(JsonSchemaPrimitiveType::Object);
-                } else if map.contains_key("items") || map.contains_key("prefixItems") {
+                } else if map.contains_key("items")
+                    || map.contains_key("prefixItems")
+                    || map.contains_key("minItems")
+                    || map.contains_key("maxItems")
+                {
                     schema_types.push(JsonSchemaPrimitiveType::Array);
                 } else if map.contains_key("enum") || map.contains_key("format") {
                     schema_types.push(JsonSchemaPrimitiveType::String);
