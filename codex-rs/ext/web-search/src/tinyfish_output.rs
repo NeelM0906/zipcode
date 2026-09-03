@@ -88,11 +88,6 @@ pub(crate) struct TinyFishOutput {
 }
 
 impl TinyFishOutput {
-    #[cfg(test)]
-    pub(crate) fn model_text(&self) -> &str {
-        &self.output
-    }
-
     pub(crate) fn response_item(&self) -> ResponseInputItem {
         ResponseInputItem::FunctionCallOutput {
             call_id: self.call_id.clone(),

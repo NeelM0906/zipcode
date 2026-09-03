@@ -1,4 +1,6 @@
 use codex_api::SearchResponseLength;
+use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ResponseInputItem;
 use pretty_assertions::assert_eq;
 
 use crate::tinyfish_output::MAX_TINYFISH_OUTPUT_BYTES;
@@ -22,8 +24,17 @@ fn normalizes_the_documented_search_response_shape() {
     )
     .expect("ordinary TinyFish output should prepare");
 
-    let actual = serde_json::from_str::<serde_json::Value>(output.model_text())
-        .expect("model output should remain JSON");
+    let ResponseInputItem::FunctionCallOutput { output, .. } = output.response_item() else {
+        panic!("TinyFish should return function output");
+    };
+    let [FunctionCallOutputContentItem::InputText { text }] = output
+        .content_items()
+        .expect("function output should contain content")
+    else {
+        panic!("TinyFish should return one text item");
+    };
+    let actual =
+        serde_json::from_str::<serde_json::Value>(text).expect("model output should remain JSON");
     let expected = serde_json::from_str::<serde_json::Value>(
         r#"{"provider":"tinyfish","searches":[{"query":"rust async traits","results":[{"position":1,"site_name":"docs.rs","title":"Rust documentation","snippet":"Traits define shared behavior.","url":"https://docs.rs/"}]}]}"#,
     )
