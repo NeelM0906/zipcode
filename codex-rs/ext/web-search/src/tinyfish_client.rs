@@ -19,13 +19,6 @@ use crate::tinyfish_output::TinyFishSearchResponse;
 use crate::tinyfish_request::MAX_TINYFISH_RECENCY_DAYS;
 use crate::tinyfish_request::TinyFishSearchRequest;
 
-#[cfg_attr(
-    test,
-    allow(
-        dead_code,
-        reason = "the fixed endpoint is first consumed by the next stacked change"
-    )
-)]
 pub(crate) const TINYFISH_SEARCH_ENDPOINT: &str = "https://api.search.tinyfish.ai";
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ERROR_BODY_BYTES: usize = 1024;
@@ -41,11 +34,6 @@ pub(crate) struct TinyFishSearchClient {
 
 #[derive(Debug, Error)]
 pub(crate) enum TinyFishError {
-    #[error("failed to configure the fixed TinyFish web search endpoint")]
-    EndpointConfiguration {
-        #[source]
-        source: url::ParseError,
-    },
     #[error("failed to configure TinyFish web search")]
     Configuration {
         #[source]
@@ -98,23 +86,7 @@ struct TinyFishWireRequest<'a> {
 }
 
 impl TinyFishSearchClient {
-    #[cfg_attr(
-        test,
-        allow(
-            dead_code,
-            reason = "production construction is first used by the next stacked change"
-        )
-    )]
-    pub(crate) fn new(
-        http_client_factory: HttpClientFactory,
-        api_key: RedactedString,
-    ) -> Result<Self, TinyFishError> {
-        let endpoint = Url::parse(TINYFISH_SEARCH_ENDPOINT)
-            .map_err(|source| TinyFishError::EndpointConfiguration { source })?;
-        Self::from_endpoint(http_client_factory, endpoint, api_key)
-    }
-
-    fn from_endpoint(
+    pub(crate) fn from_endpoint(
         http_client_factory: HttpClientFactory,
         endpoint: Url,
         api_key: RedactedString,
@@ -189,23 +161,6 @@ impl TinyFishSearchClient {
             serde_json::from_slice(&body).map_err(|_| TinyFishError::ResponseDecode)?;
         redact_api_key(&mut response, self.api_key.as_str());
         Ok(response)
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) mod test_support {
-    use super::HttpClientFactory;
-    use super::RedactedString;
-    use super::TinyFishError;
-    use super::TinyFishSearchClient;
-    use super::Url;
-
-    pub(crate) fn client(
-        http_client_factory: HttpClientFactory,
-        endpoint: Url,
-        api_key: RedactedString,
-    ) -> Result<TinyFishSearchClient, TinyFishError> {
-        TinyFishSearchClient::from_endpoint(http_client_factory, endpoint, api_key)
     }
 }
 

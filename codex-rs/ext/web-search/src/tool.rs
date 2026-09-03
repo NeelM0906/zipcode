@@ -12,7 +12,9 @@ use codex_extension_api::ResponsesApiTool;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolName;
+use codex_extension_api::ToolNetworkEgress;
 use codex_extension_api::ToolOutput;
+use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolSpec;
 use codex_extension_api::parse_tool_input_schema_without_compaction;
 use codex_extension_items::ExtensionItem;
@@ -90,6 +92,18 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WebSearchTool {
 
     fn supports_parallel_tool_calls(&self) -> bool {
         true
+    }
+
+    fn network_egress(
+        &self,
+        payload: &ToolPayload,
+    ) -> Result<Option<ToolNetworkEgress>, FunctionCallError> {
+        match &self.backend {
+            WebSearchBackend::Model { .. } => Ok(None),
+            WebSearchBackend::Tinyfish { runtime } => {
+                runtime.network_egress(payload, &self.settings).map(Some)
+            }
+        }
     }
 
     fn handle<'a>(&'a self, call: ToolCall<'call>) -> codex_extension_api::ToolExecutorFuture<'a>

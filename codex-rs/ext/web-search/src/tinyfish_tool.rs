@@ -1,23 +1,26 @@
 use codex_extension_api::ExtensionTurnItem;
 use codex_extension_api::FunctionCallError;
 use codex_extension_api::ToolCall;
+use codex_extension_api::ToolNetworkEgress;
 use codex_extension_api::ToolOutput;
 use codex_extension_api::ToolPayload;
 use codex_extension_items::web_search::WebSearchItem;
 use codex_http_client::HttpClientFactory;
+use codex_protocol::approvals::NetworkApprovalProtocol;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WebSearchBeginEvent;
 use codex_utils_redacted_string::RedactedString;
-#[cfg(any(test, feature = "test-support"))]
 use url::Url;
 
 use crate::schema::TinyFishCommands;
+use crate::tinyfish_client::TINYFISH_SEARCH_ENDPOINT;
 use crate::tinyfish_client::TinyFishSearchClient;
 use crate::tinyfish_output::MAX_TINYFISH_OUTPUT_BYTES;
 use crate::tinyfish_output::TinyFishOutput;
 use crate::tinyfish_output::prepare_tinyfish_output;
 use crate::tinyfish_request::prepare_tinyfish_requests;
+use crate::tinyfish_request::tinyfish_review_command;
 use crate::tool::WebSearchTool;
 use crate::tool::extension_turn_item;
 
@@ -52,17 +55,10 @@ impl TinyFishRuntime {
         tool: &WebSearchTool,
         call: ToolCall<'_>,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
-        let commands = parse_commands(&call)?;
-        let requests = prepare_tinyfish_requests(&commands, &tool.settings)?;
-        let api_key = self
-            .api_key
-            .as_ref()
-            .filter(|api_key| !api_key.as_str().trim().is_empty())
-            .ok_or_else(|| {
-                FunctionCallError::RespondToModel(
-                    "TinyFish web search requires TINYFISH_API_KEY".to_string(),
-                )
-            })?;
+        let api_key = self.api_key()?;
+        let prepared = prepare_call(&call.payload, &tool.settings)?;
+        let commands = prepared.commands;
+        let requests = prepared.requests;
         let client = self.client(api_key)?;
 
         call.turn_item_emitter
@@ -106,19 +102,73 @@ impl TinyFishRuntime {
         Ok(Box::new(output))
     }
 
-    fn client(&self, api_key: &RedactedString) -> Result<TinyFishSearchClient, FunctionCallError> {
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(endpoint) = self.endpoint.clone() {
-            return crate::tinyfish_client::test_support::client(
-                self.http_client_factory.clone(),
-                endpoint,
-                api_key.clone(),
+    pub(crate) fn network_egress(
+        &self,
+        payload: &ToolPayload,
+        settings: &codex_api::SearchSettings,
+    ) -> Result<ToolNetworkEgress, FunctionCallError> {
+        self.api_key()?;
+        let prepared = prepare_call(payload, settings)?;
+        let endpoint = self.endpoint()?;
+        let protocol = match endpoint.scheme() {
+            "http" => NetworkApprovalProtocol::Http,
+            "https" => NetworkApprovalProtocol::Https,
+            scheme => {
+                return Err(FunctionCallError::Fatal(format!(
+                    "TinyFish web search endpoint uses unsupported scheme {scheme}"
+                )));
+            }
+        };
+        let host = endpoint.host_str().ok_or_else(|| {
+            FunctionCallError::Fatal(
+                "TinyFish web search endpoint does not contain a host".to_string(),
             )
-            .map_err(|err| FunctionCallError::RespondToModel(err.to_string()));
+        })?;
+        let port = endpoint.port_or_known_default().ok_or_else(|| {
+            FunctionCallError::Fatal(
+                "TinyFish web search endpoint does not contain a known port".to_string(),
+            )
+        })?;
+
+        Ok(ToolNetworkEgress {
+            protocol,
+            host: host.to_string(),
+            port,
+            review_command: prepared.review_command,
+        })
+    }
+
+    fn endpoint(&self) -> Result<Url, FunctionCallError> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(endpoint) = self.endpoint.as_ref() {
+            return Ok(endpoint.clone());
         }
 
-        TinyFishSearchClient::new(self.http_client_factory.clone(), api_key.clone())
-            .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))
+        Url::parse(TINYFISH_SEARCH_ENDPOINT).map_err(|err| {
+            FunctionCallError::Fatal(format!(
+                "failed to configure the fixed TinyFish web search endpoint: {err}"
+            ))
+        })
+    }
+
+    fn api_key(&self) -> Result<&RedactedString, FunctionCallError> {
+        self.api_key
+            .as_ref()
+            .filter(|api_key| !api_key.as_str().trim().is_empty())
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "TinyFish web search requires TINYFISH_API_KEY".to_string(),
+                )
+            })
+    }
+
+    fn client(&self, api_key: &RedactedString) -> Result<TinyFishSearchClient, FunctionCallError> {
+        TinyFishSearchClient::from_endpoint(
+            self.http_client_factory.clone(),
+            self.endpoint()?,
+            api_key.clone(),
+        )
+        .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))
     }
 }
 
@@ -142,9 +192,30 @@ pub(crate) mod test_support {
     }
 }
 
-fn parse_commands(call: &ToolCall<'_>) -> Result<TinyFishCommands, FunctionCallError> {
-    serde_json::from_str(call.function_arguments()?)
-        .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))
+struct PreparedTinyFishCall {
+    commands: TinyFishCommands,
+    requests: Vec<crate::tinyfish_request::TinyFishSearchRequest>,
+    review_command: Vec<String>,
+}
+
+fn prepare_call(
+    payload: &ToolPayload,
+    settings: &codex_api::SearchSettings,
+) -> Result<PreparedTinyFishCall, FunctionCallError> {
+    let ToolPayload::Function { arguments } = payload else {
+        return Err(FunctionCallError::Fatal(
+            "TinyFish web search received an incompatible tool payload".to_string(),
+        ));
+    };
+    let commands: TinyFishCommands = serde_json::from_str(arguments)
+        .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
+    let requests = prepare_tinyfish_requests(&commands, settings)?;
+    let review_command = tinyfish_review_command(&requests)?;
+    Ok(PreparedTinyFishCall {
+        commands,
+        requests,
+        review_command,
+    })
 }
 
 impl ToolOutput for TinyFishOutput {

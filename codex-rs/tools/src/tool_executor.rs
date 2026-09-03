@@ -1,6 +1,8 @@
 use crate::FunctionCallError;
 use crate::ToolName;
+use crate::ToolNetworkEgress;
 use crate::ToolOutput;
+use crate::ToolPayload;
 use crate::ToolSearchInfo;
 use crate::ToolSpec;
 use codex_protocol::config_types::ToolExposureSurface;
@@ -121,6 +123,18 @@ pub trait ToolExecutor<Invocation>: Send + Sync {
 
     fn supports_parallel_tool_calls(&self) -> bool {
         false
+    }
+
+    /// Describes network egress that the host must review before invoking this tool.
+    ///
+    /// Implementations must include every outbound model-controlled field in a bounded,
+    /// credential-free `review_command`. Returning `None` declares that the tool does not perform
+    /// host-reviewed network egress.
+    fn network_egress(
+        &self,
+        _payload: &ToolPayload,
+    ) -> Result<Option<ToolNetworkEgress>, FunctionCallError> {
+        Ok(None)
     }
 
     /// Handles one invocation without retaining capabilities borrowed by the host.

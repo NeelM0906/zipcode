@@ -33,6 +33,7 @@ pub use codex_tools::ToolEnvironment;
 pub use codex_tools::ToolExecutor;
 pub use codex_tools::ToolExecutorFuture;
 pub use codex_tools::ToolName;
+pub use codex_tools::ToolNetworkEgress;
 pub use codex_tools::ToolOutput;
 pub use codex_tools::ToolPayload;
 pub use codex_tools::ToolSpec;

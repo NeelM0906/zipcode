@@ -12,6 +12,7 @@ use codex_extension_api::ToolCall;
 use codex_extension_api::ToolCallSource;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolName;
+use codex_extension_api::ToolNetworkEgress;
 use codex_extension_api::ToolOutput;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolSpec;
@@ -21,6 +22,7 @@ use codex_extension_items::ExtensionItem;
 use codex_extension_items::web_search::WebSearchAction;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
+use codex_protocol::approvals::NetworkApprovalProtocol;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseInputItem;
@@ -43,6 +45,109 @@ use crate::tool::WebSearchTool;
 
 const API_KEY: &str = "tf-private-api-key";
 const MAX_SERIALIZED_ITEM_BYTES: usize = 10_000;
+
+#[test]
+fn tinyfish_declares_the_exact_reviewable_test_egress() {
+    let endpoint = Url::parse("http://127.0.0.1:43127/search").expect("valid test endpoint");
+    let settings = SearchSettings {
+        filters: Some(SearchFilters {
+            allowed_domains: Some(vec!["docs.rs".to_string()]),
+            blocked_domains: None,
+        }),
+        user_location: Some(ApproximateLocation {
+            r#type: LocationType::Approximate,
+            country: Some("US".to_string()),
+            region: None,
+            city: None,
+            timezone: None,
+        }),
+        ..Default::default()
+    };
+    let tool = tinyfish_tool(endpoint, Some(API_KEY), settings);
+    let payload = ToolPayload::Function {
+        arguments: serde_json::json!({
+            "search_query": [{
+                "q": " rust async traits ",
+                "domains": ["docs.rs", "blocked.example"],
+                "recency": 2
+            }]
+        })
+        .to_string(),
+    };
+
+    let egress = tool
+        .network_egress(&payload)
+        .expect("TinyFish egress declaration should be valid")
+        .expect("TinyFish should declare network egress");
+
+    assert_eq!(
+        egress,
+        ToolNetworkEgress {
+            protocol: NetworkApprovalProtocol::Http,
+            host: "127.0.0.1".to_string(),
+            port: 43_127,
+            review_command: vec![
+                "web.run".to_string(),
+                r#"[{"query":"rust async traits","domains":["docs.rs"],"recency_days":2,"location":"US"}]"#
+                    .to_string(),
+            ],
+        }
+    );
+    assert!(!egress.review_command.join(" ").contains(API_KEY));
+}
+
+#[test]
+fn tinyfish_requires_an_api_key_before_declaring_egress() {
+    let endpoint = Url::parse("http://127.0.0.1:43127/search").expect("valid test endpoint");
+    let payload = ToolPayload::Function {
+        arguments: serde_json::json!({"search_query": [{"q": "rust"}]}).to_string(),
+    };
+
+    for api_key in [None, Some("   ")] {
+        let tool = tinyfish_tool(endpoint.clone(), api_key, SearchSettings::default());
+        assert!(matches!(
+            tool.network_egress(&payload),
+            Err(FunctionCallError::RespondToModel(message))
+                if message == "TinyFish web search requires TINYFISH_API_KEY"
+        ));
+    }
+}
+
+#[test]
+fn tinyfish_rejects_unreviewable_egress_payloads() {
+    let tool = tinyfish_tool(
+        Url::parse("http://127.0.0.1:1").expect("valid test endpoint"),
+        Some(API_KEY),
+        SearchSettings::default(),
+    );
+    let oversized = ToolPayload::Function {
+        arguments: serde_json::json!({
+            "search_query": [{"q": "x".repeat(9_000)}]
+        })
+        .to_string(),
+    };
+
+    assert!(matches!(
+        tool.network_egress(&oversized),
+        Err(FunctionCallError::RespondToModel(message))
+            if message == "TinyFish web search request is too large for security review"
+    ));
+
+    let secret_domain = ToolPayload::Function {
+        arguments: serde_json::json!({
+            "search_query": [{
+                "q": "rust",
+                "domains": ["token=abcdefghijklmnop"]
+            }]
+        })
+        .to_string(),
+    };
+    assert!(matches!(
+        tool.network_egress(&secret_domain),
+        Err(FunctionCallError::RespondToModel(message))
+            if message == "TinyFish web search queries must not contain credentials or secrets"
+    ));
+}
 
 #[test]
 fn tinyfish_backend_exposes_only_the_search_query_contract() {

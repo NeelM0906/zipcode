@@ -1,17 +1,48 @@
 use codex_api::SearchSettings;
 use codex_extension_api::FunctionCallError;
 use codex_secrets::redact_secrets;
+use serde::Serialize;
 
 use crate::schema::TinyFishCommands;
 
 pub(crate) const MAX_TINYFISH_RECENCY_DAYS: u64 = 3_650;
+const MAX_TINYFISH_REVIEW_COMMAND_BYTES: usize = 8 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct TinyFishSearchRequest {
     pub(crate) query: String,
     pub(crate) domains: Option<Vec<String>>,
     pub(crate) recency_days: Option<u64>,
     pub(crate) location: Option<String>,
+}
+
+pub(crate) fn tinyfish_review_command(
+    requests: &[TinyFishSearchRequest],
+) -> Result<Vec<String>, FunctionCallError> {
+    let requests = serde_json::to_string(requests).map_err(|err| {
+        FunctionCallError::Fatal(format!(
+            "failed to serialize TinyFish web search for security review: {err}"
+        ))
+    })?;
+    if redact_secrets(requests.clone()) != requests {
+        return Err(FunctionCallError::RespondToModel(
+            "TinyFish web search queries must not contain credentials or secrets".to_string(),
+        ));
+    }
+    let command = vec!["web.run".to_string(), requests];
+    let serialized_len = serde_json::to_vec(&command)
+        .map_err(|err| {
+            FunctionCallError::Fatal(format!(
+                "failed to measure TinyFish web search security review payload: {err}"
+            ))
+        })?
+        .len();
+    if serialized_len > MAX_TINYFISH_REVIEW_COMMAND_BYTES {
+        return Err(FunctionCallError::RespondToModel(
+            "TinyFish web search request is too large for security review".to_string(),
+        ));
+    }
+    Ok(command)
 }
 
 pub(crate) fn prepare_tinyfish_requests(
