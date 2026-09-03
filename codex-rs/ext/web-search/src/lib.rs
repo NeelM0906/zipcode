@@ -18,7 +18,3 @@ mod tinyfish_request_tests;
 #[cfg(test)]
 #[path = "tinyfish_output_tests.rs"]
 mod tinyfish_output_tests;
-
-#[cfg(test)]
-#[path = "tinyfish_client_tests.rs"]
-mod tinyfish_client_tests;

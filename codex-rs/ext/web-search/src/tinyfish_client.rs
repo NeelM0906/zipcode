@@ -112,15 +112,6 @@ impl TinyFishSearchClient {
         Self::from_endpoint(http_client_factory, endpoint, api_key)
     }
 
-    #[cfg(test)]
-    pub(crate) fn new_for_test(
-        http_client_factory: HttpClientFactory,
-        endpoint: Url,
-        api_key: RedactedString,
-    ) -> Result<Self, TinyFishError> {
-        Self::from_endpoint(http_client_factory, endpoint, api_key)
-    }
-
     fn from_endpoint(
         http_client_factory: HttpClientFactory,
         endpoint: Url,
@@ -199,6 +190,10 @@ impl TinyFishSearchClient {
         Ok(response)
     }
 }
+
+#[cfg(test)]
+#[path = "tinyfish_client_tests.rs"]
+mod tests;
 
 #[derive(Clone, Copy)]
 enum ResponseEncoding {

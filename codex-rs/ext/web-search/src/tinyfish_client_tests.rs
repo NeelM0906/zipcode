@@ -19,8 +19,8 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 use wiremock::matchers::query_param;
 
-use crate::tinyfish_client::TinyFishError;
-use crate::tinyfish_client::TinyFishSearchClient;
+use super::TinyFishError;
+use super::TinyFishSearchClient;
 use crate::tinyfish_output::TinyFishSearchResponse;
 use crate::tinyfish_output::TinyFishSearchResult;
 use crate::tinyfish_request::TinyFishSearchRequest;
@@ -339,7 +339,7 @@ fn test_client(server: &MockServer) -> TinyFishSearchClient {
 }
 
 fn test_client_at(endpoint: Url) -> TinyFishSearchClient {
-    TinyFishSearchClient::new_for_test(
+    TinyFishSearchClient::from_endpoint(
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         endpoint,
         RedactedString::from(TEST_API_KEY),
