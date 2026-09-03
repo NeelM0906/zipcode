@@ -4811,6 +4811,7 @@ dependencies = [
  "codex-model-provider-info",
  "codex-otel",
  "codex-protocol",
+ "codex-secrets",
  "codex-tools",
  "codex-utils-redacted-string",
  "flate2",

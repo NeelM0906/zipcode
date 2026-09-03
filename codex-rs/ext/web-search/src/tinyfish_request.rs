@@ -1,5 +1,6 @@
 use codex_api::SearchSettings;
 use codex_extension_api::FunctionCallError;
+use codex_secrets::redact_secrets;
 
 use crate::schema::TinyFishCommands;
 
@@ -48,6 +49,12 @@ pub(crate) fn prepare_tinyfish_requests(
             if query_text.is_empty() {
                 return Err(FunctionCallError::RespondToModel(
                     "TinyFish web search queries must not be empty".to_string(),
+                ));
+            }
+            if redact_secrets(query_text.to_string()) != query_text {
+                return Err(FunctionCallError::RespondToModel(
+                    "TinyFish web search queries must not contain credentials or secrets"
+                        .to_string(),
                 ));
             }
             if query

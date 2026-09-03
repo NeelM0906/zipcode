@@ -155,6 +155,26 @@ fn rejects_blank_queries() {
 }
 
 #[test]
+fn rejects_queries_that_contain_recognized_secrets() {
+    for query in [
+        "find sk-abcdefghijklmnopqrstuv",
+        "search token=abcdefghijklmnop",
+    ] {
+        let commands = TinyFishCommands {
+            search_query: vec![search_query(query)],
+            response_length: None,
+        };
+
+        assert_eq!(
+            prepare_tinyfish_requests(&commands, &SearchSettings::default()),
+            Err(codex_extension_api::FunctionCallError::RespondToModel(
+                "TinyFish web search queries must not contain credentials or secrets".to_string()
+            ))
+        );
+    }
+}
+
+#[test]
 fn rejects_recency_outside_the_supported_range() {
     for recency in [0, 3_651, u64::MAX] {
         let mut query = search_query("rust");

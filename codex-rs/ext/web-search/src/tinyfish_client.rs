@@ -291,9 +291,7 @@ async fn bounded_error_body(
         .content_length()
         .is_some_and(|length| length > MAX_ERROR_BODY_BYTES as u64)
     {
-        return format!(
-            "[response body omitted because it exceeds {MAX_ERROR_BODY_BYTES} bytes]"
-        );
+        return format!("[response body omitted because it exceeds {MAX_ERROR_BODY_BYTES} bytes]");
     }
 
     let mut bytes = Vec::new();

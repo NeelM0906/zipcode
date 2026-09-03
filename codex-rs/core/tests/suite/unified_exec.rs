@@ -33,6 +33,7 @@ use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::shell_environment::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
+use codex_protocol::shell_environment::TINYFISH_API_KEY_ENV_VAR;
 use codex_protocol::user_input::UserInput;
 use codex_utils_output_truncation::approx_tokens_from_byte_count;
 use codex_utils_path_uri::PathUri;
@@ -352,6 +353,97 @@ async fn exec_command_does_not_expose_configured_noise_auth_token() -> Result<()
     .await;
     harness
         .submit("check the remote execution auth token")
+        .await?;
+
+    let output = parse_unified_exec_output(&harness.function_call_stdout(call_id).await)?;
+    assert_eq!(output.output.trim(), "unset");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exec_command_does_not_expose_configured_tinyfish_api_key() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "basic PowerShell execution through Wine is unavailable"
+    );
+
+    let builder = test_codex().with_model("gpt-5.4").with_config(|config| {
+        config.permissions.shell_environment_policy.r#set.insert(
+            TINYFISH_API_KEY_ENV_VAR.to_string(),
+            "configured-tinyfish-api-key".to_string(),
+        );
+        config.permissions.shell_environment_policy.r#set.insert(
+            TINYFISH_API_KEY_ENV_VAR.to_ascii_lowercase(),
+            "case-variant-tinyfish-api-key".to_string(),
+        );
+    });
+    let harness = TestCodexHarness::with_auto_env_builder(builder).await?;
+    let selection = harness
+        .test()
+        .codex
+        .environment_selections()
+        .await
+        .into_iter()
+        .next()
+        .context("thread should select its executor environment")?;
+    harness
+        .test()
+        .codex
+        .environment_ready(
+            &selection,
+            EnvironmentConfig {
+                allow_login_shell: true,
+                workspace_roots: selection.workspace_roots.clone(),
+                permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::Disabled),
+                shell_environment_policy: harness
+                    .test()
+                    .config
+                    .permissions
+                    .shell_environment_policy
+                    .clone(),
+                windows_sandbox_level: WindowsSandboxLevel::from_config(&harness.test().config),
+                windows_sandbox_private_desktop: harness
+                    .test()
+                    .config
+                    .permissions
+                    .windows_sandbox_private_desktop,
+                use_legacy_landlock: harness.test().config.features.use_legacy_landlock(),
+                exec_policy: None,
+                mcp_policy: None,
+                network_policy: None,
+                selected_capability_roots: Vec::new(),
+            },
+        )
+        .await?;
+    let command = match core_test_support::test_target_os() {
+        core_test_support::TestTargetOs::Linux | core_test_support::TestTargetOs::MacOs => {
+            "if [ -n \"${TINYFISH_API_KEY:-}\" ] || [ -n \"${tinyfish_api_key:-}\" ]; then echo leaked; else echo unset; fi"
+        }
+        core_test_support::TestTargetOs::Windows => {
+            "if ($env:TINYFISH_API_KEY) { Write-Output leaked } else { Write-Output unset }"
+        }
+    };
+    let call_id = "exec-command-tinyfish-api-key";
+    let arguments = json!({ "cmd": command, "yield_time_ms": 5_000 });
+    mount_sse_sequence(
+        harness.server(),
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_function_call(call_id, "exec_command", &serde_json::to_string(&arguments)?),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+    harness
+        .submit_with_permission_profile("check the TinyFish API key", PermissionProfile::Disabled)
         .await?;
 
     let output = parse_unified_exec_output(&harness.function_call_stdout(call_id).await)?;
