@@ -3,6 +3,7 @@ use codex_extension_api::FunctionCallError;
 use codex_secrets::redact_secrets;
 use codex_utils_redacted_string::RedactedString;
 use serde::Serialize;
+use url::Position;
 use url::Url;
 
 use crate::schema::TinyFishCommands;
@@ -153,17 +154,17 @@ fn reject_wire_requests(
     })?;
     if requests.iter().any(|request| {
         request.contains(api_key)
-            || request
-                .request_url(review_url.clone())
-                .query()
-                .is_some_and(|query| query.contains(api_key))
+            || request.request_url(review_url.clone())[Position::BeforePath..].contains(api_key)
     }) {
         return Err(credentials_error());
     }
     Ok(())
 }
 
-fn reject_review_text(text: &str, api_key: &RedactedString) -> Result<(), FunctionCallError> {
+pub(crate) fn reject_review_text(
+    text: &str,
+    api_key: &RedactedString,
+) -> Result<(), FunctionCallError> {
     if (!api_key.as_str().is_empty() && text.contains(api_key.as_str()))
         || redact_secrets(text.to_string()) != text
     {

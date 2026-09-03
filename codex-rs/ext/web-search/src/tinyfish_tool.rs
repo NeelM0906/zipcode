@@ -21,6 +21,7 @@ use crate::tinyfish_output::TinyFishOutput;
 use crate::tinyfish_output::prepare_tinyfish_output;
 use crate::tinyfish_request::prepare_tinyfish_egress;
 use crate::tinyfish_request::prepare_tinyfish_requests;
+use crate::tinyfish_request::reject_review_text;
 use crate::tool::WebSearchTool;
 use crate::tool::extension_turn_item;
 
@@ -208,6 +209,7 @@ fn prepare_call(
             "TinyFish web search received an incompatible tool payload".to_string(),
         ));
     };
+    reject_review_text(arguments, api_key)?;
     let commands: TinyFishCommands = serde_json::from_str(arguments)
         .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
     let source_requests = prepare_tinyfish_requests(&commands, settings, api_key)?;

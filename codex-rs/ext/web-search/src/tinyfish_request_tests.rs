@@ -261,6 +261,15 @@ fn review_command_rejects_api_keys_reconstructed_by_outbound_transformations() {
                 location: None,
             },
         ),
+        (
+            "?query=foo",
+            TinyFishSearchRequest {
+                query: "foo".to_string(),
+                domains: None,
+                recency_days: None,
+                location: None,
+            },
+        ),
     ];
 
     for (api_key, request) in cases {

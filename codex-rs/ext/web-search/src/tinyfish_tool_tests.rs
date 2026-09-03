@@ -304,26 +304,33 @@ async fn configured_tinyfish_key_is_rejected_from_every_outbound_field_before_si
 }
 
 #[tokio::test]
-async fn configured_tinyfish_key_is_rejected_after_outbound_transformations_before_side_effects() {
+async fn configured_tinyfish_key_is_rejected_after_raw_or_wire_transforms() {
     let server = MockServer::start().await;
     let cases = [
         (
             "foo,bar",
             serde_json::json!({
                 "search_query": [{"q": "rust", "domains": ["foo", "bar"]}]
-            }),
+            })
+            .to_string(),
         ),
         (
             r#"foo","bar"#,
             serde_json::json!({
                 "search_query": [{"q": "rust", "domains": ["foo", "bar"]}]
-            }),
+            })
+            .to_string(),
         ),
         (
             "2880",
             serde_json::json!({
                 "search_query": [{"q": "rust", "recency": 2}]
-            }),
+            })
+            .to_string(),
+        ),
+        (
+            r#"foo", "bar"#,
+            r#"{"search_query":[{"q":"rust","domains":["foo", "bar"]}]}"#.to_string(),
         ),
     ];
 
@@ -334,7 +341,7 @@ async fn configured_tinyfish_key_is_rejected_after_outbound_transformations_befo
             SearchSettings::default(),
         );
         let payload = ToolPayload::Function {
-            arguments: arguments.to_string(),
+            arguments: arguments.clone(),
         };
         let egress_error = tool
             .network_egress(&payload)
@@ -348,7 +355,7 @@ async fn configured_tinyfish_key_is_rejected_after_outbound_transformations_befo
 
         let emitter = Arc::new(RecordingTurnItemEmitter::default());
         let result = tool
-            .handle(tool_call(
+            .handle(tool_call_with_arguments(
                 arguments,
                 ConversationHistory::default(),
                 Arc::clone(&emitter) as Arc<dyn TurnItemEmitter>,
@@ -591,6 +598,18 @@ fn tool_call(
     conversation_history: ConversationHistory,
     turn_item_emitter: Arc<dyn TurnItemEmitter>,
 ) -> ToolCall<'static> {
+    tool_call_with_arguments(
+        arguments.to_string(),
+        conversation_history,
+        turn_item_emitter,
+    )
+}
+
+fn tool_call_with_arguments(
+    arguments: String,
+    conversation_history: ConversationHistory,
+    turn_item_emitter: Arc<dyn TurnItemEmitter>,
+) -> ToolCall<'static> {
     ToolCall {
         turn_id: "turn-1".to_string(),
         call_id: "call-1".to_string(),
@@ -602,9 +621,7 @@ fn tool_call(
         conversation_history,
         turn_item_emitter,
         environments: Vec::new(),
-        payload: ToolPayload::Function {
-            arguments: arguments.to_string(),
-        },
+        payload: ToolPayload::Function { arguments },
     }
 }
 
