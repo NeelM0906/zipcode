@@ -23,7 +23,7 @@ use super::TinyFishError;
 use super::TinyFishSearchClient;
 use crate::tinyfish_output::TinyFishSearchResponse;
 use crate::tinyfish_output::TinyFishSearchResult;
-use crate::tinyfish_request::TinyFishSearchRequest;
+use crate::tinyfish_request::TinyFishWireRequest;
 
 const TEST_API_KEY: &str = "test-tinyfish-key";
 
@@ -68,10 +68,10 @@ async fn sends_the_maximum_recency_and_decodes_the_typed_response() {
         .await;
 
     let response = test_client(&server)
-        .search(&TinyFishSearchRequest {
+        .search(&TinyFishWireRequest {
             query: "rust async traits".to_string(),
-            domains: Some(vec!["doc.rust-lang.org".to_string(), "docs.rs".to_string()]),
-            recency_days: Some(3_650),
+            include_domains: Some("doc.rust-lang.org,docs.rs".to_string()),
+            recency_minutes: Some(5_256_000),
             location: Some("US".to_string()),
         })
         .await
@@ -354,13 +354,6 @@ async fn bounds_a_chunked_provider_error_body() {
     assert!(!format!("{error:?}").contains(TEST_API_KEY));
 }
 
-#[tokio::test]
-async fn invalid_recency_fails_before_sending_a_request() {
-    for days in [0, 3_651, u64::MAX] {
-        assert_recency_rejected_before_network(days).await;
-    }
-}
-
 fn test_client(server: &MockServer) -> TinyFishSearchClient {
     test_client_at(Url::parse(&server.uri()).expect("mock endpoint should be valid"))
 }
@@ -381,41 +374,13 @@ fn http_status(error: &TinyFishError) -> (http::StatusCode, &str) {
     (*status, body)
 }
 
-fn test_request() -> TinyFishSearchRequest {
-    TinyFishSearchRequest {
+fn test_request() -> TinyFishWireRequest {
+    TinyFishWireRequest {
         query: "bounded transport".to_string(),
-        domains: None,
-        recency_days: None,
+        include_domains: None,
+        recency_minutes: None,
         location: None,
     }
-}
-
-async fn assert_recency_rejected_before_network(days: u64) {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(/*status*/ 200))
-        .expect(/*n*/ 0)
-        .mount(&server)
-        .await;
-    let mut request = test_request();
-    request.recency_days = Some(days);
-
-    let error = test_client(&server)
-        .search(&request)
-        .await
-        .expect_err("out-of-range recency should fail before sending");
-
-    assert_eq!(
-        error.to_string(),
-        format!("TinyFish recency_days value {days} must be between 1 and 3650")
-    );
-    assert!(
-        server
-            .received_requests()
-            .await
-            .expect("recorded requests should be available")
-            .is_empty()
-    );
 }
 
 fn oversized_success_json() -> String {

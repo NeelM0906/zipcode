@@ -3,11 +3,14 @@ use codex_extension_api::FunctionCallError;
 use codex_secrets::redact_secrets;
 use codex_utils_redacted_string::RedactedString;
 use serde::Serialize;
+use url::Url;
 
 use crate::schema::TinyFishCommands;
 
 pub(crate) const MAX_TINYFISH_RECENCY_DAYS: u64 = 3_650;
 const MAX_TINYFISH_REVIEW_COMMAND_BYTES: usize = 8 * 1024;
+const MINUTES_PER_DAY: u64 = 24 * 60;
+const TINYFISH_REVIEW_URL: &str = "https://tinyfish.invalid/";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct TinyFishSearchRequest {
@@ -17,33 +20,156 @@ pub(crate) struct TinyFishSearchRequest {
     pub(crate) location: Option<String>,
 }
 
-pub(crate) fn tinyfish_review_command(
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct TinyFishWireRequest {
+    pub(crate) query: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) include_domains: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) recency_minutes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) location: Option<String>,
+}
+
+impl TinyFishWireRequest {
+    pub(crate) fn request_url(&self, mut endpoint: Url) -> Url {
+        let mut query = endpoint.query_pairs_mut();
+        query.append_pair("query", &self.query);
+        if let Some(include_domains) = self.include_domains.as_deref() {
+            query.append_pair("include_domains", include_domains);
+        }
+        if let Some(recency_minutes) = self.recency_minutes {
+            query.append_pair("recency_minutes", &recency_minutes.to_string());
+        }
+        if let Some(location) = self.location.as_deref() {
+            query.append_pair("location", location);
+        }
+        drop(query);
+        endpoint
+    }
+
+    fn contains(&self, value: &str) -> bool {
+        self.query.contains(value)
+            || self
+                .include_domains
+                .as_deref()
+                .is_some_and(|domains| domains.contains(value))
+            || self
+                .recency_minutes
+                .is_some_and(|minutes| minutes.to_string().contains(value))
+            || self
+                .location
+                .as_deref()
+                .is_some_and(|location| location.contains(value))
+    }
+}
+
+pub(crate) struct PreparedTinyFishEgress {
+    pub(crate) requests: Vec<TinyFishWireRequest>,
+    pub(crate) review_command: Vec<String>,
+}
+
+pub(crate) fn prepare_tinyfish_egress(
     requests: &[TinyFishSearchRequest],
     api_key: &RedactedString,
-) -> Result<Vec<String>, FunctionCallError> {
+) -> Result<PreparedTinyFishEgress, FunctionCallError> {
     reject_configured_api_key(requests, api_key)?;
-    let requests = serde_json::to_string(requests).map_err(|err| {
+    let source_requests = serialize_for_review(requests)?;
+    reject_review_text(&source_requests, api_key)?;
+    let serialized_source_requests = serialize_for_review(&source_requests)?;
+    reject_review_text(&serialized_source_requests, api_key)?;
+
+    let requests = requests
+        .iter()
+        .map(prepare_wire_request)
+        .collect::<Result<Vec<_>, _>>()?;
+    let review_requests = serialize_for_review(&requests)?;
+    reject_review_text(&review_requests, api_key)?;
+    reject_wire_requests(&requests, api_key)?;
+
+    let command = vec!["web.run".to_string(), review_requests];
+    let serialized_command = serde_json::to_string(&command).map_err(|err| {
         FunctionCallError::Fatal(format!(
-            "failed to serialize TinyFish web search for security review: {err}"
+            "failed to measure TinyFish web search security review payload: {err}"
         ))
     })?;
-    if redact_secrets(requests.clone()) != requests {
-        return Err(credentials_error());
-    }
-    let command = vec!["web.run".to_string(), requests];
-    let serialized_len = serde_json::to_vec(&command)
-        .map_err(|err| {
-            FunctionCallError::Fatal(format!(
-                "failed to measure TinyFish web search security review payload: {err}"
-            ))
-        })?
-        .len();
-    if serialized_len > MAX_TINYFISH_REVIEW_COMMAND_BYTES {
+    reject_review_text(&serialized_command, api_key)?;
+    if serialized_command.len() > MAX_TINYFISH_REVIEW_COMMAND_BYTES {
         return Err(FunctionCallError::RespondToModel(
             "TinyFish web search request is too large for security review".to_string(),
         ));
     }
-    Ok(command)
+    Ok(PreparedTinyFishEgress {
+        requests,
+        review_command: command,
+    })
+}
+
+fn serialize_for_review<T>(value: &T) -> Result<String, FunctionCallError>
+where
+    T: ?Sized + Serialize,
+{
+    serde_json::to_string(value).map_err(|err| {
+        FunctionCallError::Fatal(format!(
+            "failed to serialize TinyFish web search for security review: {err}"
+        ))
+    })
+}
+
+fn prepare_wire_request(
+    request: &TinyFishSearchRequest,
+) -> Result<TinyFishWireRequest, FunctionCallError> {
+    let recency_minutes = request
+        .recency_days
+        .map(|days| {
+            if !(1..=MAX_TINYFISH_RECENCY_DAYS).contains(&days) {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "TinyFish web search recency must be between 1 and {MAX_TINYFISH_RECENCY_DAYS} days"
+                )));
+            }
+            Ok(days * MINUTES_PER_DAY)
+        })
+        .transpose()?;
+    Ok(TinyFishWireRequest {
+        query: request.query.clone(),
+        include_domains: request.domains.as_ref().map(|domains| domains.join(",")),
+        recency_minutes,
+        location: request.location.clone(),
+    })
+}
+
+fn reject_wire_requests(
+    requests: &[TinyFishWireRequest],
+    api_key: &RedactedString,
+) -> Result<(), FunctionCallError> {
+    let api_key = api_key.as_str();
+    if api_key.is_empty() {
+        return Ok(());
+    }
+    let review_url = Url::parse(TINYFISH_REVIEW_URL).map_err(|err| {
+        FunctionCallError::Fatal(format!(
+            "failed to configure TinyFish web search security review URL: {err}"
+        ))
+    })?;
+    if requests.iter().any(|request| {
+        request.contains(api_key)
+            || request
+                .request_url(review_url.clone())
+                .query()
+                .is_some_and(|query| query.contains(api_key))
+    }) {
+        return Err(credentials_error());
+    }
+    Ok(())
+}
+
+fn reject_review_text(text: &str, api_key: &RedactedString) -> Result<(), FunctionCallError> {
+    if (!api_key.as_str().is_empty() && text.contains(api_key.as_str()))
+        || redact_secrets(text.to_string()) != text
+    {
+        return Err(credentials_error());
+    }
+    Ok(())
 }
 
 pub(crate) fn prepare_tinyfish_requests(

@@ -38,7 +38,6 @@ use url::Url;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
-use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 use wiremock::matchers::query_param;
@@ -446,15 +445,15 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
 
     const CALL_ID: &str = "tinyfish-web-run";
     const EXFIL_CALL_ID: &str = "tinyfish-secret-exfiltration";
-    const API_KEY: &str = "x7Qp4mN9vL2sR8tW";
+    const SPLIT_DOMAIN_CALL_ID: &str = "tinyfish-split-domain-exfiltration";
+    const API_KEY: &str = "foo,bar";
     const QUERY: &str = "rust async traits";
-    const SECRET_QUERY: &str = "find x7Qp4mN9vL2sR8tW";
+    const SECRET_QUERY: &str = "find foo,bar";
 
     let server = responses::start_mock_server().await;
     let tinyfish_server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/"))
-        .and(header("X-API-Key", API_KEY))
         .and(query_param("query", QUERY))
         .respond_with(
             ResponseTemplate::new(/*status*/ 200).set_body_json(serde_json::json!({
@@ -519,8 +518,25 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
                 responses::ev_completed("resp-2"),
             ]),
             responses::sse(vec![
-                responses::ev_assistant_message("msg-1", "Search complete."),
+                responses::ev_response_created("resp-3"),
+                responses::ev_function_call_with_namespace(
+                    SPLIT_DOMAIN_CALL_ID,
+                    "web",
+                    "run",
+                    &serde_json::json!({
+                        "search_query": [{
+                            "q": "public documentation",
+                            "domains": ["foo", "bar"],
+                        }],
+                        "response_length": "short",
+                    })
+                    .to_string(),
+                ),
                 responses::ev_completed("resp-3"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("msg-1", "Search complete."),
+                responses::ev_completed("resp-4"),
             ]),
         ],
     )
@@ -554,7 +570,7 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
     test.submit_turn("Search for Rust async traits").await?;
 
     let requests = response_mock.requests();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
     let first_body = requests[0].body_json();
     assert!(has_namespaced_tool(
         additional_tools(&first_body)?,
@@ -594,6 +610,13 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
         blocked_output.as_deref(),
         Some("TinyFish web search queries must not contain credentials or secrets")
     );
+    let split_domain_output = requests[4]
+        .function_call_output_text(SPLIT_DOMAIN_CALL_ID)
+        .context("split-domain TinyFish query should return a function call output")?;
+    assert_eq!(
+        split_domain_output,
+        "TinyFish web search queries must not contain credentials or secrets"
+    );
     let guardian_requests = requests
         .iter()
         .filter(|request| {
@@ -606,6 +629,21 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
         .await
         .context("TinyFish requests should be available")?;
     assert_eq!(tinyfish_requests.len(), 1);
+    assert_eq!(
+        tinyfish_requests[0]
+            .headers
+            .get("X-API-Key")
+            .and_then(|value| value.to_str().ok()),
+        Some(API_KEY)
+    );
+    assert_eq!(
+        tinyfish_requests[0]
+            .url
+            .query_pairs()
+            .find(|(name, _)| name == "query")
+            .map(|(_, value)| value.into_owned()),
+        Some(QUERY.to_string())
+    );
 
     Ok(())
 }

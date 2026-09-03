@@ -11,19 +11,16 @@ use codex_utils_redacted_string::RedactedString;
 use flate2::read::MultiGzDecoder;
 use http::header::ACCEPT_ENCODING;
 use http::header::CONTENT_ENCODING;
-use serde::Serialize;
 use thiserror::Error;
 use url::Url;
 
 use crate::tinyfish_output::TinyFishSearchResponse;
-use crate::tinyfish_request::MAX_TINYFISH_RECENCY_DAYS;
-use crate::tinyfish_request::TinyFishSearchRequest;
+use crate::tinyfish_request::TinyFishWireRequest;
 
 pub(crate) const TINYFISH_SEARCH_ENDPOINT: &str = "https://api.search.tinyfish.ai";
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ERROR_BODY_BYTES: usize = 1024;
 const MAX_SUCCESS_BODY_BYTES: usize = 1024 * 1024;
-const MINUTES_PER_DAY: u64 = 24 * 60;
 
 #[derive(Clone)]
 pub(crate) struct TinyFishSearchClient {
@@ -70,19 +67,6 @@ pub(crate) enum TinyFishError {
     },
     #[error("TinyFish web search returned invalid JSON")]
     ResponseDecode,
-    #[error("TinyFish recency_days value {days} must be between 1 and 3650")]
-    RecencyOutOfRange { days: u64 },
-}
-
-#[derive(Serialize)]
-struct TinyFishWireRequest<'a> {
-    query: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    include_domains: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recency_minutes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    location: Option<&'a str>,
 }
 
 impl TinyFishSearchClient {
@@ -109,29 +93,13 @@ impl TinyFishSearchClient {
 
     pub(crate) async fn search(
         &self,
-        request: &TinyFishSearchRequest,
+        request: &TinyFishWireRequest,
     ) -> Result<TinyFishSearchResponse, TinyFishError> {
-        let recency_minutes = request
-            .recency_days
-            .map(|days| {
-                if !(1..=MAX_TINYFISH_RECENCY_DAYS).contains(&days) {
-                    return Err(TinyFishError::RecencyOutOfRange { days });
-                }
-                Ok(days * MINUTES_PER_DAY)
-            })
-            .transpose()?;
-        let query = TinyFishWireRequest {
-            query: &request.query,
-            include_domains: request.domains.as_ref().map(|domains| domains.join(",")),
-            recency_minutes,
-            location: request.location.as_deref(),
-        };
         let response = self
             .client
-            .get(self.endpoint.clone())
+            .get(request.request_url(self.endpoint.clone()))
             .header("X-API-Key", self.api_key.as_str())
             .header(ACCEPT_ENCODING, "gzip")
-            .query(&query)
             .timeout(SEARCH_TIMEOUT)
             .send()
             .await

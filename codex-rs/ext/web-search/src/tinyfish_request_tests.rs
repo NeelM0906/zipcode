@@ -11,8 +11,8 @@ use crate::schema::TinyFishCommands;
 use crate::schema::TinyFishSearchQuery;
 use crate::schema::tinyfish_commands_schema;
 use crate::tinyfish_request::TinyFishSearchRequest;
+use crate::tinyfish_request::prepare_tinyfish_egress;
 use crate::tinyfish_request::prepare_tinyfish_requests as prepare_tinyfish_requests_with_api_key;
-use crate::tinyfish_request::tinyfish_review_command;
 
 const API_KEY: &str = "x7Qp4mN9vL2sR8tW";
 
@@ -205,7 +205,68 @@ fn review_command_rejects_the_configured_api_key_from_every_request_field() {
 
     for request in requests {
         assert_eq!(
-            tinyfish_review_command(&[request], &api_key),
+            prepare_tinyfish_egress(&[request], &api_key).map(|prepared| prepared.review_command),
+            Err(FunctionCallError::RespondToModel(
+                "TinyFish web search queries must not contain credentials or secrets".to_string()
+            ))
+        );
+    }
+}
+
+#[test]
+fn review_command_rejects_api_keys_reconstructed_by_outbound_transformations() {
+    let cases = [
+        (
+            "foo,bar",
+            TinyFishSearchRequest {
+                query: "rust".to_string(),
+                domains: Some(vec!["foo".to_string(), "bar".to_string()]),
+                recency_days: None,
+                location: None,
+            },
+        ),
+        (
+            r#"foo","bar"#,
+            TinyFishSearchRequest {
+                query: "rust".to_string(),
+                domains: Some(vec!["foo".to_string(), "bar".to_string()]),
+                recency_days: None,
+                location: None,
+            },
+        ),
+        (
+            r#"foo\",\"bar"#,
+            TinyFishSearchRequest {
+                query: "rust".to_string(),
+                domains: Some(vec!["foo".to_string(), "bar".to_string()]),
+                recency_days: None,
+                location: None,
+            },
+        ),
+        (
+            "2880",
+            TinyFishSearchRequest {
+                query: "rust".to_string(),
+                domains: None,
+                recency_days: Some(2),
+                location: None,
+            },
+        ),
+        (
+            "foo%2Cbar",
+            TinyFishSearchRequest {
+                query: "rust".to_string(),
+                domains: Some(vec!["foo".to_string(), "bar".to_string()]),
+                recency_days: None,
+                location: None,
+            },
+        ),
+    ];
+
+    for (api_key, request) in cases {
+        assert_eq!(
+            prepare_tinyfish_egress(&[request], &RedactedString::from(api_key))
+                .map(|prepared| prepared.review_command),
             Err(FunctionCallError::RespondToModel(
                 "TinyFish web search queries must not contain credentials or secrets".to_string()
             ))

@@ -90,7 +90,7 @@ fn tinyfish_declares_the_exact_reviewable_test_egress() {
             port: 43_127,
             review_command: vec![
                 "web.run".to_string(),
-                r#"[{"query":"rust async traits","domains":["docs.rs"],"recency_days":2,"location":"US"}]"#
+                r#"[{"query":"rust async traits","include_domains":"docs.rs","recency_minutes":2880,"location":"US"}]"#
                     .to_string(),
             ],
         }
@@ -301,6 +301,73 @@ async fn configured_tinyfish_key_is_rejected_from_every_outbound_field_before_si
         assert!(emitter.started.lock().expect("started lock").is_empty());
         assert!(emitter.completed.lock().expect("completed lock").is_empty());
     }
+}
+
+#[tokio::test]
+async fn configured_tinyfish_key_is_rejected_after_outbound_transformations_before_side_effects() {
+    let server = MockServer::start().await;
+    let cases = [
+        (
+            "foo,bar",
+            serde_json::json!({
+                "search_query": [{"q": "rust", "domains": ["foo", "bar"]}]
+            }),
+        ),
+        (
+            r#"foo","bar"#,
+            serde_json::json!({
+                "search_query": [{"q": "rust", "domains": ["foo", "bar"]}]
+            }),
+        ),
+        (
+            "2880",
+            serde_json::json!({
+                "search_query": [{"q": "rust", "recency": 2}]
+            }),
+        ),
+    ];
+
+    for (api_key, arguments) in cases {
+        let tool = tinyfish_tool(
+            Url::parse(&server.uri()).expect("valid mock endpoint"),
+            Some(api_key),
+            SearchSettings::default(),
+        );
+        let payload = ToolPayload::Function {
+            arguments: arguments.to_string(),
+        };
+        let egress_error = tool
+            .network_egress(&payload)
+            .expect_err("the transformed API key must not enter the review command");
+        assert_eq!(
+            egress_error,
+            FunctionCallError::RespondToModel(
+                "TinyFish web search queries must not contain credentials or secrets".to_string()
+            )
+        );
+
+        let emitter = Arc::new(RecordingTurnItemEmitter::default());
+        let result = tool
+            .handle(tool_call(
+                arguments,
+                ConversationHistory::default(),
+                Arc::clone(&emitter) as Arc<dyn TurnItemEmitter>,
+            ))
+            .await;
+        let Err(error) = result else {
+            panic!("the transformed API key must not be sent upstream");
+        };
+        assert_eq!(
+            error,
+            FunctionCallError::RespondToModel(
+                "TinyFish web search queries must not contain credentials or secrets".to_string()
+            )
+        );
+        assert!(emitter.started.lock().expect("started lock").is_empty());
+        assert!(emitter.completed.lock().expect("completed lock").is_empty());
+    }
+
+    assert!(received_requests(&server).await.is_empty());
 }
 
 #[tokio::test]

@@ -19,8 +19,8 @@ use crate::tinyfish_client::TinyFishSearchClient;
 use crate::tinyfish_output::MAX_TINYFISH_OUTPUT_BYTES;
 use crate::tinyfish_output::TinyFishOutput;
 use crate::tinyfish_output::prepare_tinyfish_output;
+use crate::tinyfish_request::prepare_tinyfish_egress;
 use crate::tinyfish_request::prepare_tinyfish_requests;
-use crate::tinyfish_request::tinyfish_review_command;
 use crate::tool::WebSearchTool;
 use crate::tool::extension_turn_item;
 
@@ -194,7 +194,7 @@ pub(crate) mod test_support {
 
 struct PreparedTinyFishCall {
     commands: TinyFishCommands,
-    requests: Vec<crate::tinyfish_request::TinyFishSearchRequest>,
+    requests: Vec<crate::tinyfish_request::TinyFishWireRequest>,
     review_command: Vec<String>,
 }
 
@@ -210,12 +210,12 @@ fn prepare_call(
     };
     let commands: TinyFishCommands = serde_json::from_str(arguments)
         .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
-    let requests = prepare_tinyfish_requests(&commands, settings, api_key)?;
-    let review_command = tinyfish_review_command(&requests, api_key)?;
+    let source_requests = prepare_tinyfish_requests(&commands, settings, api_key)?;
+    let prepared_egress = prepare_tinyfish_egress(&source_requests, api_key)?;
     Ok(PreparedTinyFishCall {
         commands,
-        requests,
-        review_command,
+        requests: prepared_egress.requests,
+        review_command: prepared_egress.review_command,
     })
 }
 
