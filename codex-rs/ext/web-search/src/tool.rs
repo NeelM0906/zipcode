@@ -12,7 +12,9 @@ use codex_extension_api::ResponsesApiTool;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolName;
+use codex_extension_api::ToolNetworkEgress;
 use codex_extension_api::ToolOutput;
+use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolSpec;
 use codex_extension_api::parse_tool_input_schema_without_compaction;
 use codex_extension_items::ExtensionItem;
@@ -33,18 +35,21 @@ use http::HeaderMap;
 use http::HeaderValue;
 use url::Url;
 
+use crate::extension::WebSearchBackend;
 use crate::history::recent_input;
 use crate::output::SearchOutput;
 use crate::schema::commands_schema;
+use crate::schema::tinyfish_commands_schema;
 
 pub(crate) const WEB_NAMESPACE: &str = "web";
 pub(crate) const RUN_TOOL_NAME: &str = "run";
 const WEB_RUN_DESCRIPTION: &str = include_str!("../web_run_description.md");
+const TINYFISH_RUN_DESCRIPTION: &str = include_str!("../tinyfish_run_description.md");
 const RESULTS_PAYLOAD_BYTES_METRIC: &str = "codex.web_search.results.payload_bytes";
 
 pub(crate) struct WebSearchTool {
     pub(crate) session_id: String,
-    pub(crate) provider: SharedModelProvider,
+    pub(crate) backend: WebSearchBackend,
     pub(crate) settings: SearchSettings,
     pub(crate) originator: Option<String>,
 }
@@ -56,7 +61,13 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WebSearchTool {
 
     fn spec(&self) -> ToolSpec {
         // parse schema without compaction that removes field metadata/descriptions to match hosted tool definition
-        let parameters = match parse_tool_input_schema_without_compaction(&commands_schema()) {
+        let (schema, description) = match &self.backend {
+            WebSearchBackend::Model { .. } => (commands_schema(), WEB_RUN_DESCRIPTION),
+            WebSearchBackend::Tinyfish { .. } => {
+                (tinyfish_commands_schema(), TINYFISH_RUN_DESCRIPTION)
+            }
+        };
+        let parameters = match parse_tool_input_schema_without_compaction(&schema) {
             Ok(parameters) => parameters,
             Err(err) => panic!("search command schema should parse: {err}"),
         };
@@ -66,7 +77,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WebSearchTool {
             description: default_namespace_description(WEB_NAMESPACE),
             tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
                 name: RUN_TOOL_NAME.to_string(),
-                description: WEB_RUN_DESCRIPTION.to_string(),
+                description: description.to_string(),
                 strict: false,
                 parameters,
                 output_schema: None,
@@ -83,6 +94,18 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WebSearchTool {
         true
     }
 
+    fn network_egress(
+        &self,
+        payload: &ToolPayload,
+    ) -> Result<Option<ToolNetworkEgress>, FunctionCallError> {
+        match &self.backend {
+            WebSearchBackend::Model { .. } => Ok(None),
+            WebSearchBackend::Tinyfish { runtime } => {
+                runtime.network_egress(payload, &self.settings).map(Some)
+            }
+        }
+    }
+
     fn handle<'a>(&'a self, call: ToolCall<'call>) -> codex_extension_api::ToolExecutorFuture<'a>
     where
         'call: 'a,
@@ -96,21 +119,30 @@ impl WebSearchTool {
         &self,
         call: ToolCall<'_>,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+        match &self.backend {
+            WebSearchBackend::Model { provider } => self.handle_model_call(call, provider).await,
+            WebSearchBackend::Tinyfish { runtime } => runtime.handle(self, call).await,
+        }
+    }
+
+    async fn handle_model_call(
+        &self,
+        call: ToolCall<'_>,
+        provider: &SharedModelProvider,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let commands = parse_commands(&call)?;
         let command_action = command_action(&commands);
-        let provider = self
-            .provider
+        let api_provider = provider
             .api_provider()
             .await
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
-        let auth = self
-            .provider
+        let auth = provider
             .api_auth()
             .await
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
         let client = SearchClient::new(
             ReqwestTransport::from_http_client(create_client()),
-            provider,
+            api_provider,
             auth,
         );
         let request = SearchRequest {
@@ -259,7 +291,10 @@ fn literal_url(ref_id: &str) -> Option<String> {
     Url::parse(ref_id).is_ok().then(|| ref_id.to_string())
 }
 
-fn extension_turn_item(item: WebSearchItem, legacy_event: EventMsg) -> ExtensionTurnItem {
+pub(super) fn extension_turn_item(
+    item: WebSearchItem,
+    legacy_event: EventMsg,
+) -> ExtensionTurnItem {
     ExtensionTurnItem {
         item: ExtensionItem::WebSearch(item),
         legacy_events: vec![legacy_event],

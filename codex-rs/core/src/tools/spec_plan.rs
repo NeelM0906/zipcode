@@ -67,6 +67,7 @@ use codex_login::AuthManager;
 use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
 use codex_protocol::account::PlanType;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WebSearchProvider;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::error::CodexErrorDetails;
@@ -182,13 +183,13 @@ pub(crate) fn build_tool_router(
             &registered_mcp_tools,
             &mut registry,
         );
-        let standalone_web_search_tool = append_extension_tool_executors(
+        let standalone_web_search_tool = append_extension_and_dynamic_tool_runtimes(
             turn_context,
             model_info,
             extension_tool_executors(session, step_store),
+            &turn_context.dynamic_tools,
             &mut registry,
         );
-        append_dynamic_tool_runtimes(&turn_context.dynamic_tools, &mut registry);
         hosted_model_tool_specs(
             turn_context,
             model_info,
@@ -326,13 +327,13 @@ pub(crate) fn append_source_tools(
     for tool in mcp_tools {
         registry.register_external_with_exposure(tool.runtime, tool.exposure);
     }
-    let standalone_web_search_tool = append_extension_tool_executors(
+    let standalone_web_search_tool = append_extension_and_dynamic_tool_runtimes(
         turn_context,
         model_info,
         extension_tool_executors,
+        dynamic_tools,
         registry,
     );
-    append_dynamic_tool_runtimes(dynamic_tools, registry);
     hosted_model_tool_specs(
         turn_context,
         model_info,
@@ -621,7 +622,8 @@ fn hosted_model_tool_specs(
         && registered_extension_tool_names.contains(&ToolName::namespaced("web", "run"));
     // `Some(Cached/Live/Disabled)` are the options for mode when standalone search is unavailable
     // and the provider supports hosted search. `None` prevents emitting a hosted search tool.
-    let web_search_mode = (!standalone_web_search_available
+    let web_search_mode = (!tinyfish_web_search_selected(turn_context)
+        && !standalone_web_search_available
         && turn_context.provider.capabilities().web_search)
         .then_some(turn_context.config.web_search_mode.value());
     let web_search_config = web_search_mode
@@ -1044,13 +1046,23 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
 
 fn standalone_web_search_enabled(turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
     namespace_tools_enabled(turn_context)
-        && turn_context.provider.capabilities().web_search
-        && (model_info.use_responses_lite
-            || turn_context
-                .config
-                .features
-                .get()
-                .enabled(Feature::StandaloneWebSearch))
+        && ((tinyfish_web_search_selected(turn_context)
+            && turn_context.config.web_search_mode.value() == WebSearchMode::Live)
+            || (turn_context.provider.capabilities().web_search
+                && (model_info.use_responses_lite
+                    || turn_context
+                        .config
+                        .features
+                        .get()
+                        .enabled(Feature::StandaloneWebSearch))))
+}
+
+fn tinyfish_web_search_selected(turn_context: &TurnContext) -> bool {
+    turn_context
+        .config
+        .web_search_config
+        .as_ref()
+        .is_some_and(|config| config.provider == WebSearchProvider::Tinyfish)
 }
 
 fn tool_environment_mode(environments: &TurnEnvironmentSnapshot) -> ToolEnvironmentMode {
@@ -1439,6 +1451,38 @@ fn append_extension_tool_executors(
         }
     }
 
+    standalone_web_search_tool
+}
+
+fn append_extension_and_dynamic_tool_runtimes(
+    turn_context: &TurnContext,
+    model_info: &ModelInfo,
+    extension_tool_executors: impl IntoIterator<
+        Item = Arc<dyn for<'call> ToolExecutor<ExtensionToolCall<'call>>>,
+    >,
+    dynamic_tools: &[DynamicToolSpec],
+    registry: &mut ToolRegistry,
+) -> Option<ToolName> {
+    let tinyfish_selected = tinyfish_web_search_selected(turn_context);
+    let web_run = ToolName::namespaced("web", "run");
+    if tinyfish_selected && registry.remove(&web_run).is_some() {
+        registry.record_collision(web_run.clone());
+    }
+
+    let standalone_web_search_tool = append_extension_tool_executors(
+        turn_context,
+        model_info,
+        extension_tool_executors,
+        registry,
+    );
+    append_dynamic_tool_runtimes(dynamic_tools, registry);
+
+    if tinyfish_selected
+        && standalone_web_search_tool.is_none()
+        && registry.remove(&web_run).is_some()
+    {
+        registry.record_collision(web_run);
+    }
     standalone_web_search_tool
 }
 

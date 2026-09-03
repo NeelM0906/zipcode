@@ -11,6 +11,7 @@ use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolCall as ExtensionToolCall;
 use codex_tools::ToolEnvironment;
 use codex_tools::ToolName;
+use codex_tools::ToolNetworkEgress;
 use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSpec;
 use codex_tools::TurnItemEmissionFuture;
@@ -59,6 +60,13 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
 
     fn search_info(&self) -> Option<ToolSearchInfo> {
         self.0.search_info()
+    }
+
+    fn network_egress(
+        &self,
+        payload: &ToolPayload,
+    ) -> Result<Option<ToolNetworkEgress>, codex_tools::FunctionCallError> {
+        self.0.network_egress(payload)
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
@@ -282,6 +290,22 @@ mod tests {
             })
         }
 
+        fn network_egress(
+            &self,
+            payload: &codex_tools::ToolPayload,
+        ) -> Result<Option<codex_tools::ToolNetworkEgress>, codex_tools::FunctionCallError>
+        {
+            Ok(Some(codex_tools::ToolNetworkEgress {
+                protocol: codex_protocol::approvals::NetworkApprovalProtocol::Https,
+                host: "extension.example".to_string(),
+                port: 443,
+                review_command: vec![
+                    "extension_echo".to_string(),
+                    payload.log_payload().into_owned(),
+                ],
+            }))
+        }
+
         fn handle<'a>(
             &'a self,
             _call: codex_tools::ToolCall<'call>,
@@ -376,6 +400,27 @@ mod tests {
         assert!(!handler.matches_kind(&ToolPayload::Custom {
             input: "raw input".to_string(),
         }));
+    }
+
+    #[test]
+    fn forwards_network_egress_declarations() {
+        let handler = ExtensionToolAdapter::new(Arc::new(StubExtensionExecutor));
+        let payload = ToolPayload::Function {
+            arguments: json!({ "message": "hello" }).to_string(),
+        };
+
+        assert_eq!(
+            codex_tools::ToolExecutor::network_egress(&handler, &payload),
+            Ok(Some(codex_tools::ToolNetworkEgress {
+                protocol: codex_protocol::approvals::NetworkApprovalProtocol::Https,
+                host: "extension.example".to_string(),
+                port: 443,
+                review_command: vec![
+                    "extension_echo".to_string(),
+                    payload.log_payload().into_owned(),
+                ],
+            }))
+        );
     }
 
     #[tokio::test]

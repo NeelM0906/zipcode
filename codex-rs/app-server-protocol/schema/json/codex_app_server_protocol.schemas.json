@@ -25027,6 +25027,13 @@
         ],
         "type": "string"
       },
+      "WebSearchProvider": {
+        "enum": [
+          "model",
+          "tinyfish"
+        ],
+        "type": "string"
+      },
       "WebSearchToolConfig": {
         "additionalProperties": false,
         "properties": {
@@ -25058,6 +25065,17 @@
                 "type": "null"
               }
             ]
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/WebSearchProvider"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "model"
           }
         },
         "type": "object"

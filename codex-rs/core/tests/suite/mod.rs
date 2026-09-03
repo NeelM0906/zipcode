@@ -66,6 +66,9 @@ mod daybreak_access;
 mod deprecation_notice;
 mod exec;
 mod exec_policy;
+mod extension_network_egress;
+mod extension_network_egress_cancellation;
+mod extension_network_egress_limits;
 #[cfg(not(target_os = "windows"))]
 mod extension_sandbox;
 mod external_auth;
@@ -164,6 +167,7 @@ mod stream_error_allows_next_turn;
 mod stream_no_completed;
 mod subagent_notifications;
 mod subagent_service_tier;
+mod tinyfish_network_approval;
 mod token_budget;
 mod tool_harness;
 mod tool_lifecycle;

@@ -52,6 +52,10 @@ pub struct JsonSchema {
     pub enum_values: Option<Vec<JsonValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub items: Option<Box<JsonSchema>>,
+    #[serde(rename = "minItems", skip_serializing_if = "Option::is_none")]
+    pub min_items: Option<u64>,
+    #[serde(rename = "maxItems", skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub properties: Option<BTreeMap<String, JsonSchema>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -519,7 +523,11 @@ fn sanitize_json_schema(value: &mut JsonValue) {
                     || map.contains_key("additionalProperties")
                 {
                     schema_types.push(JsonSchemaPrimitiveType::Object);
-                } else if map.contains_key("items") || map.contains_key("prefixItems") {
+                } else if map.contains_key("items")
+                    || map.contains_key("prefixItems")
+                    || map.contains_key("minItems")
+                    || map.contains_key("maxItems")
+                {
                     schema_types.push(JsonSchemaPrimitiveType::Array);
                 } else if map.contains_key("enum") || map.contains_key("format") {
                     schema_types.push(JsonSchemaPrimitiveType::String);

@@ -63,6 +63,30 @@ The default is `Qwen/Qwen3.8-Flash-Next` with a 524K configured context. The
 full route is `Qwen/Qwen3.8-27B-FP8` with a 1M configured context. These are
 serving limits for the current deployment, not generic capability guarantees.
 
+## TinyFish web search
+
+Set the TinyFish API key in the environment before starting ZIPCODE:
+
+```bash
+export TINYFISH_API_KEY="..."
+```
+
+```powershell
+$env:TINYFISH_API_KEY = "..."
+```
+
+Then select TinyFish with live web access in `~/.zipcode/config.toml`:
+
+```toml
+web_search = "live"
+
+[tools.web_search]
+provider = "tinyfish"
+```
+
+The key is used only for the fixed TinyFish search endpoint and is removed from
+model-reachable child-process environments.
+
 ## What is included
 
 - A Rust `zip-code` front end with isolated `~/.zipcode` state.

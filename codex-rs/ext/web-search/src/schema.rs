@@ -1,16 +1,50 @@
 use codex_api::SearchCommands;
+use codex_api::SearchResponseLength;
+use schemars::JsonSchema;
 use schemars::r#gen::SchemaSettings;
+use serde::Deserialize;
 use serde_json::Map;
 use serde_json::Value;
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TinyFishSearchQuery {
+    /// Search query.
+    pub(crate) q: String,
+    /// Whether to filter by recency, as a number of recent days.
+    pub(crate) recency: Option<u64>,
+    /// Whether to filter by a specific list of domains.
+    pub(crate) domains: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TinyFishCommands {
+    #[schemars(length(min = 1, max = 4))]
+    pub(crate) search_query: Vec<TinyFishSearchQuery>,
+    pub(crate) response_length: Option<SearchResponseLength>,
+}
+
 pub(crate) fn commands_schema() -> Value {
+    schema_for::<SearchCommands>()
+}
+
+pub(crate) fn tinyfish_commands_schema() -> Value {
+    let mut schema = schema_for::<TinyFishCommands>();
+    let search_query = &mut schema["properties"]["search_query"];
+    search_query["minItems"] = Value::from(1);
+    search_query["maxItems"] = Value::from(4);
+    schema
+}
+
+fn schema_for<T: JsonSchema>() -> Value {
     let schema = SchemaSettings::draft2019_09()
         .with(|settings| {
             settings.inline_subschemas = true;
             settings.option_add_null_type = false;
         })
         .into_generator()
-        .into_root_schema_for::<SearchCommands>();
+        .into_root_schema_for::<T>();
     let schema = match serde_json::to_value(schema) {
         Ok(schema) => schema,
         Err(err) => panic!("search commands schema should serialize: {err}"),

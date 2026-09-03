@@ -14,7 +14,9 @@ use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::WebSearchConfig;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WebSearchProvider;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::openai_models::ApplyPatchToolType;
@@ -3137,6 +3139,89 @@ async fn hosted_web_search_fallback_follows_winning_browser_runtime() {
     };
     assert_eq!(namespace.description, "Tools from browser_collision.");
     plan.assert_visible_contains(&["web_search"]);
+}
+
+#[tokio::test]
+async fn tinyfish_forces_standalone_web_search_without_hosted_fallback() {
+    let configure_turn = |turn: &mut TurnContext| {
+        set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ false);
+        set_web_search_mode(turn, WebSearchMode::Live);
+        update_config(turn, |config| {
+            config.web_search_config = Some(WebSearchConfig {
+                provider: WebSearchProvider::Tinyfish,
+                ..WebSearchConfig::default()
+            });
+        });
+        update_turn_settings_for_test(turn, |settings| {
+            Arc::make_mut(&mut settings.model_info).use_responses_lite = false;
+        });
+    };
+    let with_executor = probe_with(
+        configure_turn,
+        ToolPlanInputs {
+            tool_runtimes: vec![mcp_runtime(
+                "browser_collision",
+                "web",
+                "run",
+                ToolExposure::Direct,
+            )],
+            extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
+                namespace: "web",
+                tool_name: "run",
+            })],
+            dynamic_tools: vec![dynamic_tool(
+                Some("web"),
+                "run",
+                /*defer_loading*/ false,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    with_executor.assert_visible_contains(&["web"]);
+    with_executor.assert_visible_lacks(&["web_search"]);
+    let ToolSpec::Namespace(namespace) = with_executor.visible_spec("web") else {
+        panic!("expected TinyFish to own web.run");
+    };
+    assert_eq!(namespace.description, "Test namespace.");
+
+    let without_executor = probe_with(
+        configure_turn,
+        ToolPlanInputs {
+            tool_runtimes: vec![mcp_runtime(
+                "browser_collision",
+                "web",
+                "run",
+                ToolExposure::Direct,
+            )],
+            dynamic_tools: vec![dynamic_tool(
+                Some("web"),
+                "run",
+                /*defer_loading*/ false,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    without_executor.assert_visible_lacks(&["web", "web_search"]);
+
+    for mode in [WebSearchMode::Cached, WebSearchMode::Indexed] {
+        let unavailable_mode = probe_with(
+            |turn| {
+                configure_turn(turn);
+                set_web_search_mode(turn, mode);
+            },
+            ToolPlanInputs {
+                extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
+                    namespace: "web",
+                    tool_name: "run",
+                })],
+                ..ToolPlanInputs::default()
+            },
+        )
+        .await;
+        unavailable_mode.assert_visible_lacks(&["web", "web_search"]);
+    }
 }
 
 #[tokio::test]

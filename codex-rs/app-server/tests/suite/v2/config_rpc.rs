@@ -587,6 +587,7 @@ allowed_domains = ["example.com"]
         tools,
         ToolsV2 {
             web_search: Some(WebSearchToolConfig {
+                provider: None,
                 context_size: Some(WebSearchContextSize::Low),
                 allowed_domains: Some(vec!["example.com".to_string()]),
                 location: None,
@@ -960,6 +961,7 @@ location = { country = "US", city = "New York", timezone = "America/New_York" }
     assert_eq!(
         config.tools.expect("tools present").web_search,
         Some(WebSearchToolConfig {
+            provider: None,
             context_size: Some(WebSearchContextSize::High),
             allowed_domains: Some(vec!["example.com".to_string()]),
             location: Some(WebSearchLocation {

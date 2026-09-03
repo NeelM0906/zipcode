@@ -5616,6 +5616,13 @@
       ],
       "type": "string"
     },
+    "WebSearchProvider": {
+      "enum": [
+        "model",
+        "tinyfish"
+      ],
+      "type": "string"
+    },
     "WebSearchToolConfig": {
       "additionalProperties": false,
       "properties": {
@@ -5630,6 +5637,14 @@
         },
         "location": {
           "$ref": "#/definitions/WebSearchLocation"
+        },
+        "provider": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WebSearchProvider"
+            }
+          ],
+          "default": "model"
         }
       },
       "type": "object"

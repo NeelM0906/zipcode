@@ -26,6 +26,7 @@ fn non_inheritable_environment_is_removed_after_policy_overrides() {
             "codex_exec_server_noise_auth_token".to_string(),
             "inherited-noise-token".to_string(),
         ),
+        ("tinyfish_api_key".to_string(), "inherited-key".to_string()),
     ];
     let policy = ShellEnvironmentPolicy {
         inherit: ShellEnvironmentPolicyInherit::All,
@@ -41,6 +42,7 @@ fn non_inheritable_environment_is_removed_after_policy_overrides() {
                 "Codex_Exec_Server_Noise_Auth_Token".to_string(),
                 "configured-noise-token".to_string(),
             ),
+            ("TinyFish_Api_Key".to_string(), "configured-key".to_string()),
         ]),
         ..Default::default()
     };
@@ -67,6 +69,7 @@ fn command_scrubber_removes_names_from_real_child_environment() {
                 "Codex_Exec_Server_Noise_Auth_Token",
                 "inherited-noise-token",
             )
+            .env("TinyFish_Api_Key", "inherited-key")
             .output()
             .expect("run inherited-environment test process");
         assert!(
@@ -86,6 +89,7 @@ fn command_scrubber_removes_names_from_real_child_environment() {
             CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR,
             "configured-noise-token",
         )
+        .env("tinyfish_api_key", "configured-key")
         .env("SAFE", "value");
     scrub_non_inheritable_env_vars(&mut command);
     let output = command.output().expect("read child environment");
