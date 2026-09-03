@@ -9,13 +9,6 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by TinyFish dispatch in the next stacked change"
-    )
-)]
 pub(crate) struct TinyFishCommands {
     #[schemars(length(min = 1, max = 4))]
     pub(crate) search_query: Vec<SearchQuery>,
@@ -26,13 +19,6 @@ pub(crate) fn commands_schema() -> Value {
     schema_for::<SearchCommands>()
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by TinyFish dispatch in the next stacked change"
-    )
-)]
 pub(crate) fn tinyfish_commands_schema() -> Value {
     let mut schema = schema_for::<TinyFishCommands>();
     let search_query = &mut schema["properties"]["search_query"];

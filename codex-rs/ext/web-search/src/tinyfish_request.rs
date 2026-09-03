@@ -3,6 +3,8 @@ use codex_extension_api::FunctionCallError;
 
 use crate::schema::TinyFishCommands;
 
+pub(crate) const MAX_TINYFISH_RECENCY_DAYS: u64 = 3_650;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TinyFishSearchRequest {
     pub(crate) query: String,
@@ -11,13 +13,6 @@ pub(crate) struct TinyFishSearchRequest {
     pub(crate) location: Option<String>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by TinyFish dispatch in the next stacked change"
-    )
-)]
 pub(crate) fn prepare_tinyfish_requests(
     commands: &TinyFishCommands,
     settings: &SearchSettings,
@@ -57,10 +52,10 @@ pub(crate) fn prepare_tinyfish_requests(
             }
             if query
                 .recency
-                .is_some_and(|days| days.checked_mul(24 * 60).is_none())
+                .is_some_and(|days| !(1..=MAX_TINYFISH_RECENCY_DAYS).contains(&days))
             {
                 return Err(FunctionCallError::RespondToModel(
-                    "TinyFish web search recency is too large".to_string(),
+                    "TinyFish web search recency must be between 1 and 3650 days".to_string(),
                 ));
             }
             let domains = effective_domains(configured_domains, query.domains.as_deref())?;

@@ -16,6 +16,7 @@ use thiserror::Error;
 use url::Url;
 
 use crate::tinyfish_output::TinyFishSearchResponse;
+use crate::tinyfish_request::MAX_TINYFISH_RECENCY_DAYS;
 use crate::tinyfish_request::TinyFishSearchRequest;
 
 #[cfg_attr(
@@ -30,7 +31,6 @@ const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ERROR_BODY_BYTES: usize = 1024;
 const MAX_SUCCESS_BODY_BYTES: usize = 1024 * 1024;
 const MINUTES_PER_DAY: u64 = 24 * 60;
-const MAX_RECENCY_DAYS: u64 = 3_650;
 
 #[derive(Clone)]
 pub(crate) struct TinyFishSearchClient {
@@ -140,7 +140,7 @@ impl TinyFishSearchClient {
         let recency_minutes = request
             .recency_days
             .map(|days| {
-                if !(1..=MAX_RECENCY_DAYS).contains(&days) {
+                if !(1..=MAX_TINYFISH_RECENCY_DAYS).contains(&days) {
                     return Err(TinyFishError::RecencyOutOfRange { days });
                 }
                 Ok(days * MINUTES_PER_DAY)
@@ -188,6 +188,23 @@ impl TinyFishSearchClient {
             serde_json::from_slice(&body).map_err(|_| TinyFishError::ResponseDecode)?;
         redact_api_key(&mut response, self.api_key.as_str());
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::HttpClientFactory;
+    use super::RedactedString;
+    use super::TinyFishError;
+    use super::TinyFishSearchClient;
+    use super::Url;
+
+    pub(crate) fn client(
+        http_client_factory: HttpClientFactory,
+        endpoint: Url,
+        api_key: RedactedString,
+    ) -> Result<TinyFishSearchClient, TinyFishError> {
+        TinyFishSearchClient::from_endpoint(http_client_factory, endpoint, api_key)
     }
 }
 

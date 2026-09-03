@@ -24,6 +24,7 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchMode;
 
+use crate::tinyfish_tool::TinyFishRuntime;
 use crate::tool::WebSearchTool;
 
 #[derive(Clone)]
@@ -40,7 +41,19 @@ struct WebSearchExtensionConfig {
 
 #[derive(Clone)]
 pub(crate) enum WebSearchBackend {
-    Model { provider: SharedModelProvider },
+    Model {
+        provider: SharedModelProvider,
+    },
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "TinyFish is deliberately not selectable until the activation slice"
+        )
+    )]
+    Tinyfish {
+        runtime: TinyFishRuntime,
+    },
 }
 
 impl From<&Config> for WebSearchExtensionConfig {

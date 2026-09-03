@@ -37,6 +37,7 @@ use crate::extension::WebSearchBackend;
 use crate::history::recent_input;
 use crate::output::SearchOutput;
 use crate::schema::commands_schema;
+use crate::schema::tinyfish_commands_schema;
 
 pub(crate) const WEB_NAMESPACE: &str = "web";
 pub(crate) const RUN_TOOL_NAME: &str = "run";
@@ -57,7 +58,11 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WebSearchTool {
 
     fn spec(&self) -> ToolSpec {
         // parse schema without compaction that removes field metadata/descriptions to match hosted tool definition
-        let parameters = match parse_tool_input_schema_without_compaction(&commands_schema()) {
+        let schema = match &self.backend {
+            WebSearchBackend::Model { .. } => commands_schema(),
+            WebSearchBackend::Tinyfish { .. } => tinyfish_commands_schema(),
+        };
+        let parameters = match parse_tool_input_schema_without_compaction(&schema) {
             Ok(parameters) => parameters,
             Err(err) => panic!("search command schema should parse: {err}"),
         };
@@ -99,6 +104,7 @@ impl WebSearchTool {
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         match &self.backend {
             WebSearchBackend::Model { provider } => self.handle_model_call(call, provider).await,
+            WebSearchBackend::Tinyfish { runtime } => runtime.handle(self, call).await,
         }
     }
 
@@ -268,7 +274,10 @@ fn literal_url(ref_id: &str) -> Option<String> {
     Url::parse(ref_id).is_ok().then(|| ref_id.to_string())
 }
 
-fn extension_turn_item(item: WebSearchItem, legacy_event: EventMsg) -> ExtensionTurnItem {
+pub(super) fn extension_turn_item(
+    item: WebSearchItem,
+    legacy_event: EventMsg,
+) -> ExtensionTurnItem {
     ExtensionTurnItem {
         item: ExtensionItem::WebSearch(item),
         legacy_events: vec![legacy_event],
