@@ -172,7 +172,6 @@ mod tests {
     use codex_extension_api::ToolName;
     use codex_extension_api::ToolSpec;
     use codex_login::CodexAuth;
-    use codex_model_provider::create_model_provider;
     use codex_model_provider_info::ModelProviderInfo;
     use codex_protocol::config_types::WebSearchProvider;
     use codex_tools::ResponsesApiNamespaceTool;
@@ -181,7 +180,6 @@ mod tests {
 
     use super::AuthManager;
     use super::Config;
-    use super::WebSearchBackend;
     use super::WebSearchExtensionConfig;
     use super::external_web_access_for_mode;
     use super::install;
@@ -214,7 +212,7 @@ mod tests {
     fn installed_model_backend_preserves_web_run_availability() {
         let mut builder = ExtensionRegistryBuilder::<Config>::new();
         let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
-        install(&mut builder, auth_manager.clone());
+        install(&mut builder, auth_manager);
         let registry = builder.build();
         let session_store = ExtensionData::new("session");
         let thread_store = ExtensionData::new("11111111-1111-4111-8111-111111111111");
@@ -269,18 +267,6 @@ mod tests {
                 "model web search should retain the {command} command"
             );
         }
-
-        let backend = WebSearchBackend::Model {
-            provider: create_model_provider(
-                ModelProviderInfo::create_openai_provider(/*base_url*/ None),
-                Some(auth_manager),
-            ),
-        };
-        let WebSearchBackend::Model { provider } = backend;
-        assert_eq!(
-            provider.info(),
-            &ModelProviderInfo::create_openai_provider(/*base_url*/ None)
-        );
     }
 
     #[tokio::test]
