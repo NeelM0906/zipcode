@@ -12,6 +12,9 @@ doctest = false
 [lints]
 workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 codex-api = { workspace = true }
 codex-core = { workspace = true }

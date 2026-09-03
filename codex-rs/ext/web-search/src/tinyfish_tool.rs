@@ -9,7 +9,7 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WebSearchBeginEvent;
 use codex_utils_redacted_string::RedactedString;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use url::Url;
 
 use crate::schema::TinyFishCommands;
@@ -25,7 +25,7 @@ use crate::tool::extension_turn_item;
 pub(crate) struct TinyFishRuntime {
     http_client_factory: HttpClientFactory,
     api_key: Option<RedactedString>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     endpoint: Option<Url>,
 }
 
@@ -42,10 +42,12 @@ impl TinyFishRuntime {
         Self {
             http_client_factory,
             api_key,
+            #[cfg(any(test, feature = "test-support"))]
+            endpoint: None,
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn new_for_test(
         http_client_factory: HttpClientFactory,
         endpoint: Url,
@@ -118,7 +120,7 @@ impl TinyFishRuntime {
     }
 
     fn client(&self, api_key: &RedactedString) -> Result<TinyFishSearchClient, FunctionCallError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(endpoint) = self.endpoint.clone() {
             return crate::tinyfish_client::test_support::client(
                 self.http_client_factory.clone(),

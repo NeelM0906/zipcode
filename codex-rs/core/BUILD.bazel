@@ -14,7 +14,12 @@ codex_rust_crate(
         "//codex-rs/windows-sandbox-rs:codex-command-runner",
         "//codex-rs/windows-sandbox-rs:codex-windows-sandbox-setup",
     ],
+    integration_aliases = {
+        "//codex-rs/ext/web-search": "codex_web_search_extension_without_test_support",
+        "//codex-rs/ext/web-search:web-search-test-support": "codex_web_search_extension",
+    },
     integration_compile_data_extra = glob(["assets/**"]),
+    integration_deps_extra = ["//codex-rs/ext/web-search:web-search-test-support"],
     integration_test_timeout = "long",
     run_tests_with_wine_exec = True,
     rustc_env = {

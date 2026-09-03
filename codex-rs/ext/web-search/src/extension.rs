@@ -23,6 +23,13 @@ use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::config_types::WebSearchProvider;
+#[cfg(any(test, feature = "test-support"))]
+use codex_protocol::shell_environment::TINYFISH_API_KEY_ENV_VAR;
+#[cfg(any(test, feature = "test-support"))]
+use codex_utils_redacted_string::RedactedString;
+#[cfg(feature = "test-support")]
+use url::Url;
 
 use crate::tinyfish_tool::TinyFishRuntime;
 use crate::tool::WebSearchTool;
@@ -30,13 +37,35 @@ use crate::tool::WebSearchTool;
 #[derive(Clone)]
 struct WebSearchExtension {
     auth_manager: Arc<AuthManager>,
+    #[cfg(feature = "test-support")]
+    tinyfish_test_backend: Option<TinyfishTestBackend>,
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Clone)]
+struct TinyfishTestBackend {
+    endpoint: Url,
+    api_key_env_value: RedactedString,
 }
 
 #[derive(Clone)]
 struct WebSearchExtensionConfig {
     available: bool,
-    provider: ModelProviderInfo,
+    backend: WebSearchBackendConfig,
     settings: SearchSettings,
+}
+
+#[derive(Clone)]
+enum WebSearchBackendConfig {
+    Model { provider: ModelProviderInfo },
+    #[cfg_attr(
+        not(feature = "test-support"),
+        expect(
+            dead_code,
+            reason = "TinyFish construction remains dormant until the activation slice"
+        )
+    )]
+    Tinyfish { runtime: TinyFishRuntime },
 }
 
 #[derive(Clone)]
@@ -44,13 +73,6 @@ pub(crate) enum WebSearchBackend {
     Model {
         provider: SharedModelProvider,
     },
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "TinyFish is deliberately not selectable until the activation slice"
-        )
-    )]
     Tinyfish {
         runtime: TinyFishRuntime,
     },
@@ -60,14 +82,98 @@ impl From<&Config> for WebSearchExtensionConfig {
     fn from(config: &Config) -> Self {
         let web_search_mode = config.web_search_mode.value();
         Self {
-            // Core selects this executor per turn using the feature flag or model metadata.
-            available: (config.model_provider.is_openai()
-                || config.model_provider.uses_openai_actor_authorization()
-                || config.model_provider.supports_standalone_web_search)
-                && web_search_mode != WebSearchMode::Disabled,
-            provider: config.model_provider.clone(),
+            available: provider_available(
+                WebSearchProvider::Model,
+                web_search_mode,
+                &config.model_provider,
+            ),
+            backend: WebSearchBackendConfig::Model {
+                provider: config.model_provider.clone(),
+            },
             settings: search_settings(config, web_search_mode),
         }
+    }
+}
+
+impl WebSearchExtensionConfig {
+    #[cfg(feature = "test-support")]
+    fn from_with_tinyfish_runtime(
+        config: &Config,
+        tinyfish_runtime: impl FnOnce() -> TinyFishRuntime,
+    ) -> Self {
+        let web_search_mode = config.web_search_mode.value();
+        let web_search_provider = config
+            .web_search_config
+            .as_ref()
+            .map(|config| config.provider)
+            .unwrap_or_default();
+        let backend = match web_search_provider {
+            WebSearchProvider::Model => WebSearchBackendConfig::Model {
+                provider: config.model_provider.clone(),
+            },
+            WebSearchProvider::Tinyfish => WebSearchBackendConfig::Tinyfish {
+                runtime: tinyfish_runtime(),
+            },
+        };
+        Self {
+            available: provider_available(
+                web_search_provider,
+                web_search_mode,
+                &config.model_provider,
+            ),
+            backend,
+            settings: search_settings(config, web_search_mode),
+        }
+    }
+}
+
+impl WebSearchExtension {
+    fn config(&self, config: &Config) -> WebSearchExtensionConfig {
+        #[cfg(feature = "test-support")]
+        if let Some(test_backend) = self.tinyfish_test_backend.as_ref()
+        {
+            return WebSearchExtensionConfig::from_with_tinyfish_runtime(config, || {
+                TinyFishRuntime::new_for_test(
+                    config.http_client_factory(),
+                    test_backend.endpoint.clone(),
+                    tinyfish_api_key_from(|name| {
+                        if name == TINYFISH_API_KEY_ENV_VAR {
+                            Ok(test_backend.api_key_env_value.as_str().to_owned())
+                        } else {
+                            Err(std::env::VarError::NotPresent)
+                        }
+                    }),
+                )
+            });
+        }
+        WebSearchExtensionConfig::from(config)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn tinyfish_api_key_from(
+    get_env: impl FnOnce(&'static str) -> Result<String, std::env::VarError>,
+) -> Option<RedactedString> {
+    get_env(TINYFISH_API_KEY_ENV_VAR)
+        .ok()
+        .map(|api_key| api_key.trim().to_string())
+        .filter(|api_key| !api_key.is_empty())
+        .map(RedactedString::from)
+}
+
+fn provider_available(
+    web_search_provider: WebSearchProvider,
+    web_search_mode: WebSearchMode,
+    model_provider: &ModelProviderInfo,
+) -> bool {
+    match web_search_provider {
+        WebSearchProvider::Model => {
+            (model_provider.is_openai()
+                || model_provider.uses_openai_actor_authorization()
+                || model_provider.supports_standalone_web_search)
+                && web_search_mode != WebSearchMode::Disabled
+        }
+        WebSearchProvider::Tinyfish => web_search_mode == WebSearchMode::Live,
     }
 }
 
@@ -116,9 +222,7 @@ impl ThreadLifecycleContributor<Config> for WebSearchExtension {
         input: ThreadStartInput<'a, Config>,
     ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
-            input
-                .thread_store
-                .insert(WebSearchExtensionConfig::from(input.config));
+            input.thread_store.insert(self.config(input.config));
         })
     }
 }
@@ -131,7 +235,7 @@ impl ConfigContributor<Config> for WebSearchExtension {
         _previous_config: &Config,
         new_config: &Config,
     ) {
-        thread_store.insert(WebSearchExtensionConfig::from(new_config));
+        thread_store.insert(self.config(new_config));
     }
 }
 
@@ -150,14 +254,21 @@ impl ToolContributor for WebSearchExtension {
             return Vec::new();
         }
 
-        vec![Arc::new(WebSearchTool {
-            session_id: session_store.level_id().to_string(),
-            backend: WebSearchBackend::Model {
+        let backend = match &config.backend {
+            WebSearchBackendConfig::Model { provider } => WebSearchBackend::Model {
                 provider: create_model_provider(
-                    config.provider.clone(),
+                    provider.clone(),
                     Some(self.auth_manager.clone()),
                 ),
             },
+            WebSearchBackendConfig::Tinyfish { runtime } => WebSearchBackend::Tinyfish {
+                runtime: runtime.clone(),
+            },
+        };
+
+        vec![Arc::new(WebSearchTool {
+            session_id: session_store.level_id().to_string(),
+            backend,
             settings: config.settings.clone(),
             originator: thread_store
                 .get::<ThreadOriginator>()
@@ -167,7 +278,31 @@ impl ToolContributor for WebSearchExtension {
 }
 
 pub fn install(registry: &mut ExtensionRegistryBuilder<Config>, auth_manager: Arc<AuthManager>) {
-    let extension = Arc::new(WebSearchExtension { auth_manager });
+    let extension = Arc::new(WebSearchExtension {
+        auth_manager,
+        #[cfg(feature = "test-support")]
+        tinyfish_test_backend: None,
+    });
+    registry.thread_lifecycle_contributor(extension.clone());
+    registry.config_contributor(extension.clone());
+    registry.tool_contributor(extension);
+}
+
+#[cfg(feature = "test-support")]
+/// Installs web search with an injected TinyFish backend for integration tests.
+pub fn install_tinyfish_for_test(
+    registry: &mut ExtensionRegistryBuilder<Config>,
+    auth_manager: Arc<AuthManager>,
+    endpoint: Url,
+    api_key: RedactedString,
+) {
+    let extension = Arc::new(WebSearchExtension {
+        auth_manager,
+        tinyfish_test_backend: Some(TinyfishTestBackend {
+            endpoint,
+            api_key_env_value: api_key,
+        }),
+    });
     registry.thread_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
     registry.tool_contributor(extension);
@@ -193,9 +328,12 @@ mod tests {
 
     use super::AuthManager;
     use super::Config;
+    use super::WebSearchBackendConfig;
     use super::WebSearchExtensionConfig;
     use super::external_web_access_for_mode;
     use super::install;
+    use super::provider_available;
+    use super::tinyfish_api_key_from;
     use crate::tool::RUN_TOOL_NAME;
     use crate::tool::WEB_NAMESPACE;
     use codex_api::ExternalWebAccess;
@@ -231,7 +369,9 @@ mod tests {
         let thread_store = ExtensionData::new("11111111-1111-4111-8111-111111111111");
         thread_store.insert(WebSearchExtensionConfig {
             available: true,
-            provider: ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+            backend: WebSearchBackendConfig::Model {
+                provider: ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+            },
             settings: Default::default(),
         });
 
@@ -274,12 +414,63 @@ mod tests {
             "click",
             "find",
             "screenshot",
+            "finance",
+            "weather",
+            "sports",
+            "time",
+            "response_length",
         ] {
             assert!(
                 properties.contains_key(command),
                 "model web search should retain the {command} command"
             );
         }
+    }
+
+    #[test]
+    fn tinyfish_provider_is_available_only_in_live_mode() {
+        let unsupported_model_provider = ModelProviderInfo {
+            supports_standalone_web_search: false,
+            ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+        };
+
+        assert_eq!(
+            [
+                WebSearchMode::Disabled,
+                WebSearchMode::Cached,
+                WebSearchMode::Indexed,
+                WebSearchMode::Live,
+            ]
+            .map(|mode| {
+                provider_available(WebSearchProvider::Tinyfish, mode, &unsupported_model_provider)
+            }),
+            [false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn tinyfish_api_key_loading_uses_the_named_nonblank_value() {
+        assert_eq!(
+            tinyfish_api_key_from(|name| {
+                assert_eq!(name, super::TINYFISH_API_KEY_ENV_VAR);
+                Err(std::env::VarError::NotPresent)
+            }),
+            None
+        );
+        assert_eq!(
+            tinyfish_api_key_from(|name| {
+                assert_eq!(name, super::TINYFISH_API_KEY_ENV_VAR);
+                Ok(" \t\n ".to_string())
+            }),
+            None
+        );
+        assert_eq!(
+            tinyfish_api_key_from(|name| {
+                assert_eq!(name, super::TINYFISH_API_KEY_ENV_VAR);
+                Ok(" private-key ".to_string())
+            }),
+            Some("private-key".into())
+        );
     }
 
     #[tokio::test]
@@ -313,6 +504,13 @@ mod tests {
         );
 
         let extension_config = WebSearchExtensionConfig::from(&config);
-        assert_eq!(extension_config.provider, config.model_provider);
+        match extension_config.backend {
+            WebSearchBackendConfig::Model { provider } => {
+                assert_eq!(provider, config.model_provider)
+            }
+            WebSearchBackendConfig::Tinyfish { .. } => {
+                panic!("TinyFish must remain dormant before the activation slice")
+            }
+        }
     }
 }
