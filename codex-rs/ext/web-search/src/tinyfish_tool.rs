@@ -47,19 +47,6 @@ impl TinyFishRuntime {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn new_for_test(
-        http_client_factory: HttpClientFactory,
-        endpoint: Url,
-        api_key: Option<RedactedString>,
-    ) -> Self {
-        Self {
-            http_client_factory,
-            api_key,
-            endpoint: Some(endpoint),
-        }
-    }
-
     pub(crate) async fn handle(
         &self,
         tool: &WebSearchTool,
@@ -132,6 +119,26 @@ impl TinyFishRuntime {
 
         TinyFishSearchClient::new(self.http_client_factory.clone(), api_key.clone())
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_support {
+    use super::HttpClientFactory;
+    use super::RedactedString;
+    use super::TinyFishRuntime;
+    use super::Url;
+
+    pub(crate) fn runtime(
+        http_client_factory: HttpClientFactory,
+        endpoint: Url,
+        api_key: Option<RedactedString>,
+    ) -> TinyFishRuntime {
+        TinyFishRuntime {
+            http_client_factory,
+            api_key,
+            endpoint: Some(endpoint),
+        }
     }
 }
 

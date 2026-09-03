@@ -57,7 +57,9 @@ struct WebSearchExtensionConfig {
 
 #[derive(Clone)]
 enum WebSearchBackendConfig {
-    Model { provider: Box<ModelProviderInfo> },
+    Model {
+        provider: Box<ModelProviderInfo>,
+    },
     #[cfg_attr(
         not(feature = "test-support"),
         expect(
@@ -65,17 +67,15 @@ enum WebSearchBackendConfig {
             reason = "TinyFish construction remains dormant until the activation slice"
         )
     )]
-    Tinyfish { runtime: TinyFishRuntime },
+    Tinyfish {
+        runtime: TinyFishRuntime,
+    },
 }
 
 #[derive(Clone)]
 pub(crate) enum WebSearchBackend {
-    Model {
-        provider: SharedModelProvider,
-    },
-    Tinyfish {
-        runtime: TinyFishRuntime,
-    },
+    Model { provider: SharedModelProvider },
+    Tinyfish { runtime: TinyFishRuntime },
 }
 
 impl From<&Config> for WebSearchExtensionConfig {
@@ -130,10 +130,9 @@ impl WebSearchExtensionConfig {
 impl WebSearchExtension {
     fn config(&self, config: &Config) -> WebSearchExtensionConfig {
         #[cfg(feature = "test-support")]
-        if let Some(test_backend) = self.tinyfish_test_backend.as_ref()
-        {
+        if let Some(test_backend) = self.tinyfish_test_backend.as_ref() {
             return WebSearchExtensionConfig::from_with_tinyfish_runtime(config, || {
-                TinyFishRuntime::new_for_test(
+                crate::tinyfish_tool::test_support::runtime(
                     config.http_client_factory(),
                     test_backend.endpoint.clone(),
                     tinyfish_api_key_from(|name| {
@@ -290,7 +289,7 @@ pub fn install(registry: &mut ExtensionRegistryBuilder<Config>, auth_manager: Ar
 
 #[cfg(feature = "test-support")]
 /// Installs web search with an injected TinyFish backend for integration tests.
-pub fn install_tinyfish_for_test(
+pub(crate) fn install_tinyfish(
     registry: &mut ExtensionRegistryBuilder<Config>,
     auth_manager: Arc<AuthManager>,
     endpoint: Url,
@@ -444,7 +443,11 @@ mod tests {
                 WebSearchMode::Live,
             ]
             .map(|mode| {
-                provider_available(WebSearchProvider::Tinyfish, mode, &unsupported_model_provider)
+                provider_available(
+                    WebSearchProvider::Tinyfish,
+                    mode,
+                    &unsupported_model_provider,
+                )
             }),
             [false, false, false, true]
         );

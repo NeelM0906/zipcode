@@ -10,7 +10,8 @@ mod tool;
 
 pub use extension::install;
 #[cfg(feature = "test-support")]
-pub use extension::install_tinyfish_for_test;
+/// Integration-test fixtures for exercising the TinyFish backend.
+pub mod test_support;
 
 #[cfg(test)]
 #[path = "tinyfish_request_tests.rs"]

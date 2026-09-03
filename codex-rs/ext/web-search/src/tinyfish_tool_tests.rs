@@ -39,7 +39,6 @@ use wiremock::matchers::path;
 use wiremock::matchers::query_param;
 
 use crate::extension::WebSearchBackend;
-use crate::tinyfish_tool::TinyFishRuntime;
 use crate::tool::WebSearchTool;
 
 const API_KEY: &str = "tf-private-api-key";
@@ -329,7 +328,7 @@ fn tinyfish_tool(endpoint: Url, api_key: Option<&str>, settings: SearchSettings)
     WebSearchTool {
         session_id: "session-1".to_string(),
         backend: WebSearchBackend::Tinyfish {
-            runtime: TinyFishRuntime::new_for_test(
+            runtime: crate::tinyfish_tool::test_support::runtime(
                 HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
                 endpoint,
                 api_key.map(Into::into),
