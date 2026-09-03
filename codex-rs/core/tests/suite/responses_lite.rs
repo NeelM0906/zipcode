@@ -12,6 +12,7 @@ use codex_image_generation_extension::install as install_image_generation_extens
 use codex_login::CodexAuth;
 use codex_login::auth::BedrockApiKeyAuth;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchProvider;
 use codex_protocol::models::ImageDetail;
@@ -490,6 +491,20 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
                 responses::ev_completed("resp-1"),
             ]),
             responses::sse(vec![
+                responses::ev_response_created("resp-guardian"),
+                responses::ev_assistant_message(
+                    "msg-guardian",
+                    &serde_json::json!({
+                        "risk_level": "low",
+                        "user_authorization": "high",
+                        "outcome": "allow",
+                        "rationale": "The public documentation query is low risk.",
+                    })
+                    .to_string(),
+                ),
+                responses::ev_completed("resp-guardian"),
+            ]),
+            responses::sse(vec![
                 responses::ev_response_created("resp-2"),
                 responses::ev_function_call_with_namespace(
                     EXFIL_CALL_ID,
@@ -528,6 +543,7 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
         })
         .with_config(|config| {
             configure_responses_tools(config);
+            config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config
                 .web_search_config
                 .get_or_insert_with(Default::default)
@@ -538,14 +554,14 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
     test.submit_turn("Search for Rust async traits").await?;
 
     let requests = response_mock.requests();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     let first_body = requests[0].body_json();
     assert!(has_namespaced_tool(
         additional_tools(&first_body)?,
         "web",
         "run"
     ));
-    let (output, success) = requests[1]
+    let (output, success) = requests[2]
         .function_call_output_content_and_success(CALL_ID)
         .context("TinyFish web.run should return a function call output")?;
     assert_eq!(success, None);
@@ -570,7 +586,7 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
             }],
         })
     );
-    let (blocked_output, success) = requests[2]
+    let (blocked_output, success) = requests[3]
         .function_call_output_content_and_success(EXFIL_CALL_ID)
         .context("secret-bearing TinyFish query should return a function call output")?;
     assert_eq!(success, None);

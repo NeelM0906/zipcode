@@ -20,6 +20,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::control_tool_analytics::ControlToolCallGuard;
+use crate::tools::egress_review::review_tool_network_egress;
 use crate::tools::flat_tool_name;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::hook_names::HookToolName;
@@ -631,6 +632,42 @@ impl ToolRegistry {
                     updated_input: None,
                 } => {}
             }
+        }
+
+        let network_egress = match tool.network_egress(&invocation.payload) {
+            Ok(network_egress) => network_egress,
+            Err(err) => {
+                if tool.is_builtin_control_tool() {
+                    let mut analytics = ControlToolCallGuard::new(&invocation);
+                    analytics.finish(ControlToolCallStatus::Failed);
+                }
+                dispatch_trace.record_failed(&err);
+                notify_tool_finish_if_unclaimed(
+                    &invocation,
+                    terminal_outcome_reached.as_deref(),
+                    ToolCallOutcome::Failed {
+                        handler_executed: false,
+                    },
+                )
+                .await;
+                return Err(err);
+            }
+        };
+        if let Some(network_egress) = network_egress
+            && let Err(err) = review_tool_network_egress(&invocation, network_egress).await
+        {
+            if tool.is_builtin_control_tool() {
+                let mut analytics = ControlToolCallGuard::new(&invocation);
+                analytics.finish(ControlToolCallStatus::Rejected);
+            }
+            dispatch_trace.record_failed(&err);
+            notify_tool_finish_if_unclaimed(
+                &invocation,
+                terminal_outcome_reached.as_deref(),
+                ToolCallOutcome::Blocked,
+            )
+            .await;
+            return Err(err);
         }
 
         if tool.mcp_server_name().is_none() {

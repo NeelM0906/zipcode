@@ -2,6 +2,7 @@ mod approvals;
 pub(crate) mod code_mode;
 pub(crate) mod context;
 mod control_tool_analytics;
+mod egress_review;
 pub(crate) mod events;
 mod executed_tool_calls;
 pub(crate) mod handlers;
