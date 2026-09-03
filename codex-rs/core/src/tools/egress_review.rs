@@ -9,10 +9,11 @@ use crate::guardian::GuardianNetworkAccessTrigger;
 use crate::guardian::GuardianReviewOptions;
 use crate::guardian::guardian_timeout_message;
 use crate::guardian::new_guardian_review_id;
-use crate::guardian::review_approval_request_with_cancel;
+use crate::guardian::spawn_approval_request_review;
 use crate::sandboxing::SandboxPermissions;
 use crate::tools::context::ToolInvocation;
 use crate::tools::flat_tool_name;
+use crate::tools::sandboxing::ApprovalRequestReasons;
 
 const MAX_NETWORK_EGRESS_HOST_BYTES: usize = 253;
 const MAX_NETWORK_EGRESS_REVIEW_ARGS: usize = 64;
@@ -58,20 +59,26 @@ pub(crate) async fn review_tool_network_egress(
             tty: None,
         }),
     };
-    let decision = review_approval_request_with_cancel(
-        &invocation.session,
+    let review = spawn_approval_request_review(
+        std::sync::Arc::clone(&invocation.session),
         &invocation.step_context,
         new_guardian_review_id(),
         request,
-        /*retry_reason*/ None,
+        ApprovalRequestReasons {
+            approval: None,
+            retry: None,
+        },
         GuardianReviewOptions {
             plugin_attribution_override: None,
             approval_request_source: GuardianApprovalRequestSource::MainTurn,
             external_cancel: Some(invocation.cancellation_token.clone()),
             require_synchronous_review: true,
         },
-    )
-    .await;
+    );
+    let decision = review.await.map_err(|err| {
+        tracing::warn!(%err, "network egress Guardian review worker failed");
+        FunctionCallError::RespondToModel("Network egress review could not complete.".to_string())
+    })?;
 
     match decision {
         ReviewDecision::Approved => Ok(()),
@@ -137,3 +144,7 @@ fn network_target(protocol: NetworkApprovalProtocol, host: &str, port: u16) -> S
 #[cfg(test)]
 #[path = "egress_review_limits_tests.rs"]
 mod limits_tests;
+
+#[cfg(test)]
+#[path = "egress_review_cancellation_tests.rs"]
+mod cancellation_tests;

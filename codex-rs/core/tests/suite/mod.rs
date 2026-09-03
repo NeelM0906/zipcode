@@ -67,6 +67,7 @@ mod deprecation_notice;
 mod exec;
 mod exec_policy;
 mod extension_network_egress;
+mod extension_network_egress_cancellation;
 mod extension_network_egress_limits;
 #[cfg(not(target_os = "windows"))]
 mod extension_sandbox;
