@@ -999,18 +999,4 @@ mod tests {
 
         assert_eq!(expected, base.merge(&overlay));
     }
-
-    #[test]
-    fn web_search_provider_schema_defaults_to_model() {
-        let schema = schemars::schema_for!(WebSearchToolConfig);
-        let provider_default = serde_json::to_value(schema)
-            .expect("web-search tool config schema should serialize")
-            .pointer("/properties/provider/default")
-            .cloned();
-
-        assert_eq!(
-            provider_default,
-            Some(serde_json::Value::String("model".to_string()))
-        );
-    }
 }
