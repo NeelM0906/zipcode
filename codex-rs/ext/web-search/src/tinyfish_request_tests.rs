@@ -1,12 +1,12 @@
 use codex_api::ApproximateLocation;
 use codex_api::LocationType;
 use codex_api::SearchFilters;
-use codex_api::SearchQuery;
 use codex_api::SearchResponseLength;
 use codex_api::SearchSettings;
 use pretty_assertions::assert_eq;
 
 use crate::schema::TinyFishCommands;
+use crate::schema::TinyFishSearchQuery;
 use crate::schema::tinyfish_commands_schema;
 use crate::tinyfish_request::TinyFishSearchRequest;
 use crate::tinyfish_request::prepare_tinyfish_requests;
@@ -25,6 +25,10 @@ fn tinyfish_schema_accepts_only_one_to_four_search_queries() {
     assert_eq!(schema["required"], serde_json::json!(["search_query"]));
     assert_eq!(schema["properties"]["search_query"]["minItems"], 1);
     assert_eq!(schema["properties"]["search_query"]["maxItems"], 4);
+    assert_eq!(
+        schema["properties"]["search_query"]["items"]["additionalProperties"],
+        false
+    );
 }
 
 #[test]
@@ -41,12 +45,19 @@ fn tinyfish_commands_reject_non_search_operations() {
     .expect_err("TinyFish should reject commands outside search_query");
 
     assert!(error.to_string().contains("unknown field `open`"));
+
+    let error = serde_json::from_str::<TinyFishCommands>(
+        r#"{"search_query":[{"q":"rust","unsupported":true}]}"#,
+    )
+    .expect_err("TinyFish should reject unknown search query fields");
+
+    assert!(error.to_string().contains("unknown field `unsupported`"));
 }
 
 #[test]
 fn prepares_trimmed_query_with_allowlist_intersection_and_country_only() {
     let commands = TinyFishCommands {
-        search_query: vec![SearchQuery {
+        search_query: vec![TinyFishSearchQuery {
             q: "  rust async traits  ".to_string(),
             recency: Some(2),
             domains: Some(vec![
@@ -251,8 +262,8 @@ fn rejects_an_empty_configured_allowlist() {
     );
 }
 
-fn search_query(q: &str) -> SearchQuery {
-    SearchQuery {
+fn search_query(q: &str) -> TinyFishSearchQuery {
+    TinyFishSearchQuery {
         q: q.to_string(),
         recency: None,
         domains: None,

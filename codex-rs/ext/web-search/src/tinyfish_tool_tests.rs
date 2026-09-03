@@ -68,6 +68,23 @@ fn tinyfish_backend_exposes_only_the_search_query_contract() {
             .collect::<Vec<_>>();
 
     assert_eq!(properties, vec!["response_length", "search_query"]);
+    assert!(function.description.len() < 1_024);
+    for unsupported_operation in [
+        "image_query",
+        "open",
+        "click",
+        "find",
+        "screenshot",
+        "finance",
+        "weather",
+        "sports",
+        "time",
+    ] {
+        assert!(
+            !function.description.contains(unsupported_operation),
+            "TinyFish description should not advertise {unsupported_operation}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -42,6 +42,7 @@ use crate::schema::tinyfish_commands_schema;
 pub(crate) const WEB_NAMESPACE: &str = "web";
 pub(crate) const RUN_TOOL_NAME: &str = "run";
 const WEB_RUN_DESCRIPTION: &str = include_str!("../web_run_description.md");
+const TINYFISH_RUN_DESCRIPTION: &str = include_str!("../tinyfish_run_description.md");
 const RESULTS_PAYLOAD_BYTES_METRIC: &str = "codex.web_search.results.payload_bytes";
 
 pub(crate) struct WebSearchTool {
@@ -58,9 +59,11 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WebSearchTool {
 
     fn spec(&self) -> ToolSpec {
         // parse schema without compaction that removes field metadata/descriptions to match hosted tool definition
-        let schema = match &self.backend {
-            WebSearchBackend::Model { .. } => commands_schema(),
-            WebSearchBackend::Tinyfish { .. } => tinyfish_commands_schema(),
+        let (schema, description) = match &self.backend {
+            WebSearchBackend::Model { .. } => (commands_schema(), WEB_RUN_DESCRIPTION),
+            WebSearchBackend::Tinyfish { .. } => {
+                (tinyfish_commands_schema(), TINYFISH_RUN_DESCRIPTION)
+            }
         };
         let parameters = match parse_tool_input_schema_without_compaction(&schema) {
             Ok(parameters) => parameters,
@@ -72,7 +75,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WebSearchTool {
             description: default_namespace_description(WEB_NAMESPACE),
             tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
                 name: RUN_TOOL_NAME.to_string(),
-                description: WEB_RUN_DESCRIPTION.to_string(),
+                description: description.to_string(),
                 strict: false,
                 parameters,
                 output_schema: None,

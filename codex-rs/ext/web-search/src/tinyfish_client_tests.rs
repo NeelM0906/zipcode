@@ -134,7 +134,8 @@ async fn rejects_a_known_length_success_body_over_one_mibibyte() {
 
 #[tokio::test]
 async fn rejects_a_chunked_success_body_over_one_mibibyte() {
-    let (endpoint, server) = start_chunked_server(oversized_success_json()).await;
+    let (endpoint, server) =
+        start_chunked_server(http::StatusCode::OK, oversized_success_json()).await;
     let error = test_client_at(endpoint)
         .search(&test_request())
         .await
@@ -269,7 +270,10 @@ async fn maps_provider_statuses_to_safe_actionable_errors() {
     for (status, expected) in [
         (401, "TinyFish rejected TINYFISH_API_KEY"),
         (402, "TinyFish account lacks Search API access"),
-        (403, "TinyFish account lacks Search API access"),
+        (
+            403,
+            "TinyFish search request was forbidden by the upstream service",
+        ),
         (429, "TinyFish web search rate limit exceeded"),
     ] {
         let server = MockServer::start().await;
@@ -325,6 +329,29 @@ async fn bounds_and_redacts_generic_provider_error_bodies() {
         "[response body omitted because it exceeds 1024 bytes]"
     );
     assert!(!format!("{large_error:?}").contains(TEST_API_KEY));
+}
+
+#[tokio::test]
+async fn bounds_a_chunked_provider_error_body() {
+    let (endpoint, server) = start_chunked_server(
+        http::StatusCode::INTERNAL_SERVER_ERROR,
+        format!("{TEST_API_KEY}{}", "x".repeat(2_048)),
+    )
+    .await;
+    let error = test_client_at(endpoint)
+        .search(&test_request())
+        .await
+        .expect_err("oversized chunked provider error should fail");
+    server
+        .await
+        .expect("chunked server should finish")
+        .expect("chunked response should succeed");
+
+    assert_eq!(
+        http_status(&error).1,
+        "[response body omitted because it exceeds 1024 bytes]"
+    );
+    assert!(!format!("{error:?}").contains(TEST_API_KEY));
 }
 
 #[tokio::test]
@@ -414,7 +441,10 @@ fn assert_response_too_large(error: &TinyFishError) {
     assert!(!debug.contains("bounded success"));
 }
 
-async fn start_chunked_server(body: String) -> (Url, tokio::task::JoinHandle<std::io::Result<()>>) {
+async fn start_chunked_server(
+    status: http::StatusCode,
+    body: String,
+) -> (Url, tokio::task::JoinHandle<std::io::Result<()>>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("chunked server should bind");
@@ -436,7 +466,11 @@ async fn start_chunked_server(body: String) -> (Url, tokio::task::JoinHandle<std
         }
         socket
             .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                format!(
+                    "HTTP/1.1 {} TinyFish Test\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                    status.as_u16()
+                )
+                .as_bytes(),
             )
             .await?;
         for chunk in body.as_bytes().chunks(64 * 1_024) {

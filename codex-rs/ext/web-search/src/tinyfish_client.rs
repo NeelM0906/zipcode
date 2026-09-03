@@ -62,6 +62,8 @@ pub(crate) enum TinyFishError {
     RateLimited,
     #[error("TinyFish account lacks Search API access")]
     AccessDenied,
+    #[error("TinyFish search request was forbidden by the upstream service")]
+    SearchForbidden,
     #[error("TinyFish web search returned HTTP {status}: {body}")]
     HttpStatus {
         status: http::StatusCode,
@@ -166,9 +168,8 @@ impl TinyFishSearchClient {
         if !status.is_success() {
             return match status {
                 http::StatusCode::UNAUTHORIZED => Err(TinyFishError::ApiKeyRejected),
-                http::StatusCode::PAYMENT_REQUIRED | http::StatusCode::FORBIDDEN => {
-                    Err(TinyFishError::AccessDenied)
-                }
+                http::StatusCode::PAYMENT_REQUIRED => Err(TinyFishError::AccessDenied),
+                http::StatusCode::FORBIDDEN => Err(TinyFishError::SearchForbidden),
                 http::StatusCode::TOO_MANY_REQUESTS => Err(TinyFishError::RateLimited),
                 _ => Err(TinyFishError::HttpStatus {
                     status,
@@ -282,31 +283,48 @@ fn append_bounded(body: &mut Vec<u8>, bytes: &[u8]) -> Result<(), TinyFishError>
     Ok(())
 }
 
-async fn bounded_error_body(response: codex_http_client::HttpResponse, api_key: &str) -> String {
-    match response.content_length() {
-        Some(length) if length > MAX_ERROR_BODY_BYTES as u64 => {
-            format!("[response body omitted because it exceeds {MAX_ERROR_BODY_BYTES} bytes]")
+async fn bounded_error_body(
+    mut response: codex_http_client::HttpResponse,
+    api_key: &str,
+) -> String {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_ERROR_BODY_BYTES as u64)
+    {
+        return format!(
+            "[response body omitted because it exceeds {MAX_ERROR_BODY_BYTES} bytes]"
+        );
+    }
+
+    let mut bytes = Vec::new();
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(_) => return "[failed to read response body]".to_string(),
+        };
+        if bytes
+            .len()
+            .checked_add(chunk.len())
+            .is_none_or(|length| length > MAX_ERROR_BODY_BYTES)
+        {
+            return format!(
+                "[response body omitted because it exceeds {MAX_ERROR_BODY_BYTES} bytes]"
+            );
         }
-        Some(_) => match response.bytes().await {
-            Ok(bytes) if bytes.len() <= MAX_ERROR_BODY_BYTES => {
-                let mut body = String::from_utf8_lossy(&bytes).into_owned();
-                if !api_key.is_empty() {
-                    body = body.replace(api_key, "[REDACTED]");
-                }
-                if body.len() <= MAX_ERROR_BODY_BYTES {
-                    body
-                } else {
-                    format!(
-                        "[response body omitted because it exceeds {MAX_ERROR_BODY_BYTES} bytes after redaction]"
-                    )
-                }
-            }
-            Ok(_) => {
-                format!("[response body omitted because it exceeds {MAX_ERROR_BODY_BYTES} bytes]")
-            }
-            Err(_) => "[failed to read response body]".to_string(),
-        },
-        None => "[response body omitted because its length is unknown]".to_string(),
+        bytes.extend_from_slice(&chunk);
+    }
+
+    let mut body = String::from_utf8_lossy(&bytes).into_owned();
+    if !api_key.is_empty() {
+        body = body.replace(api_key, "[REDACTED]");
+    }
+    if body.len() <= MAX_ERROR_BODY_BYTES {
+        body
+    } else {
+        format!(
+            "[response body omitted because it exceeds {MAX_ERROR_BODY_BYTES} bytes after redaction]"
+        )
     }
 }
 

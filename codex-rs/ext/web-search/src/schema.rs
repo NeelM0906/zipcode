@@ -1,5 +1,4 @@
 use codex_api::SearchCommands;
-use codex_api::SearchQuery;
 use codex_api::SearchResponseLength;
 use schemars::JsonSchema;
 use schemars::r#gen::SchemaSettings;
@@ -9,9 +8,20 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct TinyFishSearchQuery {
+    /// Search query.
+    pub(crate) q: String,
+    /// Whether to filter by recency, as a number of recent days.
+    pub(crate) recency: Option<u64>,
+    /// Whether to filter by a specific list of domains.
+    pub(crate) domains: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct TinyFishCommands {
     #[schemars(length(min = 1, max = 4))]
-    pub(crate) search_query: Vec<SearchQuery>,
+    pub(crate) search_query: Vec<TinyFishSearchQuery>,
     pub(crate) response_length: Option<SearchResponseLength>,
 }
 
