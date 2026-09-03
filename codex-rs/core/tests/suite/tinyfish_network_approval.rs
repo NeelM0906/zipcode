@@ -46,7 +46,8 @@ impl codex_extension_api::ApprovalReviewContributor for AutoApprovingReviewContr
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn guardian_denial_blocks_tinyfish_egress_influenced_by_search_output() -> Result<()> {
+async fn non_lite_tinyfish_dispatches_without_hosted_fallback_and_blocks_unsafe_egress()
+-> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_wine_exec!(Ok(()), "command hooks require a host-native executor");
 
@@ -220,7 +221,7 @@ else:
                 .expect("write TinyFish pre-tool hooks.json");
         })
         .with_model_info_override("gpt-5.4", |model_info| {
-            model_info.use_responses_lite = true;
+            model_info.use_responses_lite = false;
         })
         .with_config(trust_discovered_hooks)
         .with_config(|config| {
@@ -266,6 +267,20 @@ else:
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 5);
+    let first_request = requests[0].body_json();
+    let tools = first_request["tools"]
+        .as_array()
+        .context("non-lite request should advertise tools")?;
+    assert!(tools.iter().any(|tool| {
+        tool["type"] == "namespace"
+            && tool["name"] == "web"
+            && tool["tools"].as_array().is_some_and(|tools| {
+                tools
+                    .iter()
+                    .any(|tool| tool["type"] == "function" && tool["name"] == "run")
+            })
+    }));
+    assert!(tools.iter().all(|tool| tool["type"] != "web_search"));
     let guardian_requests = requests
         .iter()
         .filter(|request| {
