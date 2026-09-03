@@ -57,7 +57,7 @@ struct WebSearchExtensionConfig {
 
 #[derive(Clone)]
 enum WebSearchBackendConfig {
-    Model { provider: ModelProviderInfo },
+    Model { provider: Box<ModelProviderInfo> },
     #[cfg_attr(
         not(feature = "test-support"),
         expect(
@@ -88,7 +88,7 @@ impl From<&Config> for WebSearchExtensionConfig {
                 &config.model_provider,
             ),
             backend: WebSearchBackendConfig::Model {
-                provider: config.model_provider.clone(),
+                provider: Box::new(config.model_provider.clone()),
             },
             settings: search_settings(config, web_search_mode),
         }
@@ -109,7 +109,7 @@ impl WebSearchExtensionConfig {
             .unwrap_or_default();
         let backend = match web_search_provider {
             WebSearchProvider::Model => WebSearchBackendConfig::Model {
-                provider: config.model_provider.clone(),
+                provider: Box::new(config.model_provider.clone()),
             },
             WebSearchProvider::Tinyfish => WebSearchBackendConfig::Tinyfish {
                 runtime: tinyfish_runtime(),
@@ -257,7 +257,7 @@ impl ToolContributor for WebSearchExtension {
         let backend = match &config.backend {
             WebSearchBackendConfig::Model { provider } => WebSearchBackend::Model {
                 provider: create_model_provider(
-                    provider.clone(),
+                    provider.as_ref().clone(),
                     Some(self.auth_manager.clone()),
                 ),
             },
@@ -370,7 +370,9 @@ mod tests {
         thread_store.insert(WebSearchExtensionConfig {
             available: true,
             backend: WebSearchBackendConfig::Model {
-                provider: ModelProviderInfo::create_openai_provider(/*base_url*/ None),
+                provider: Box::new(ModelProviderInfo::create_openai_provider(
+                    /*base_url*/ None,
+                )),
             },
             settings: Default::default(),
         });
@@ -506,7 +508,7 @@ mod tests {
         let extension_config = WebSearchExtensionConfig::from(&config);
         match extension_config.backend {
             WebSearchBackendConfig::Model { provider } => {
-                assert_eq!(provider, config.model_provider)
+                assert_eq!(provider.as_ref(), &config.model_provider)
             }
             WebSearchBackendConfig::Tinyfish { .. } => {
                 panic!("TinyFish must remain dormant before the activation slice")
