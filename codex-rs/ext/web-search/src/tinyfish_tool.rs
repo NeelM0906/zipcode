@@ -34,11 +34,6 @@ pub(crate) struct TinyFishRuntime {
 }
 
 impl TinyFishRuntime {
-    #[cfg(not(test))]
-    #[expect(
-        dead_code,
-        reason = "production construction is deliberately deferred to the activation slice"
-    )]
     pub(crate) fn new(
         http_client_factory: HttpClientFactory,
         api_key: Option<RedactedString>,

@@ -24,9 +24,7 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchProvider;
-#[cfg(any(test, feature = "test-support"))]
 use codex_protocol::shell_environment::TINYFISH_API_KEY_ENV_VAR;
-#[cfg(any(test, feature = "test-support"))]
 use codex_utils_redacted_string::RedactedString;
 #[cfg(feature = "test-support")]
 use url::Url;
@@ -57,19 +55,8 @@ struct WebSearchExtensionConfig {
 
 #[derive(Clone)]
 enum WebSearchBackendConfig {
-    Model {
-        provider: Box<ModelProviderInfo>,
-    },
-    #[cfg_attr(
-        not(feature = "test-support"),
-        expect(
-            dead_code,
-            reason = "TinyFish construction remains dormant until the activation slice"
-        )
-    )]
-    Tinyfish {
-        runtime: TinyFishRuntime,
-    },
+    Model { provider: Box<ModelProviderInfo> },
+    Tinyfish { runtime: TinyFishRuntime },
 }
 
 #[derive(Clone)]
@@ -80,23 +67,16 @@ pub(crate) enum WebSearchBackend {
 
 impl From<&Config> for WebSearchExtensionConfig {
     fn from(config: &Config) -> Self {
-        let web_search_mode = config.web_search_mode.value();
-        Self {
-            available: provider_available(
-                WebSearchProvider::Model,
-                web_search_mode,
-                &config.model_provider,
-            ),
-            backend: WebSearchBackendConfig::Model {
-                provider: Box::new(config.model_provider.clone()),
-            },
-            settings: search_settings(config, web_search_mode),
-        }
+        Self::from_with_tinyfish_runtime(config, || {
+            TinyFishRuntime::new(
+                config.http_client_factory(),
+                tinyfish_api_key_from(std::env::var),
+            )
+        })
     }
 }
 
 impl WebSearchExtensionConfig {
-    #[cfg(feature = "test-support")]
     fn from_with_tinyfish_runtime(
         config: &Config,
         tinyfish_runtime: impl FnOnce() -> TinyFishRuntime,
@@ -149,7 +129,6 @@ impl WebSearchExtension {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
 fn tinyfish_api_key_from(
     get_env: impl FnOnce(&'static str) -> Result<String, std::env::VarError>,
 ) -> Option<RedactedString> {
@@ -479,7 +458,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tinyfish_config_cannot_activate_before_backend_is_wired() {
+    async fn live_tinyfish_config_activates_tinyfish_backend() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("test time should follow the Unix epoch")
@@ -509,13 +488,91 @@ mod tests {
         );
 
         let extension_config = WebSearchExtensionConfig::from(&config);
-        match extension_config.backend {
-            WebSearchBackendConfig::Model { provider } => {
-                assert_eq!(provider.as_ref(), &config.model_provider)
+        assert!(extension_config.available);
+        assert!(matches!(
+            extension_config.backend,
+            WebSearchBackendConfig::Tinyfish { .. }
+        ));
+
+        let mut model_config = config.clone();
+        model_config
+            .web_search_config
+            .get_or_insert_with(Default::default)
+            .provider = WebSearchProvider::Model;
+        let mut builder = ExtensionRegistryBuilder::<Config>::new();
+        let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+        install(&mut builder, auth_manager);
+        let registry = builder.build();
+        let session_store = ExtensionData::new("session");
+        let thread_store = ExtensionData::new("11111111-1111-4111-8111-111111111111");
+        thread_store.insert(WebSearchExtensionConfig::from(&model_config));
+        let web_run_spec = || {
+            let tools = registry
+                .tool_contributors()
+                .iter()
+                .flat_map(|contributor| contributor.tools(&session_store, &thread_store))
+                .collect::<Vec<_>>();
+            match tools.as_slice() {
+                [] => None,
+                [tool] => Some(tool.spec()),
+                _ => panic!("web search should contribute at most one tool"),
             }
-            WebSearchBackendConfig::Tinyfish { .. } => {
-                panic!("TinyFish must remain dormant before the activation slice")
-            }
-        }
+        };
+
+        let Some(ToolSpec::Namespace(model_namespace)) = web_run_spec() else {
+            panic!("model-backed web search should contribute web.run");
+        };
+        let [ResponsesApiNamespaceTool::Function(model_function)] =
+            model_namespace.tools.as_slice()
+        else {
+            panic!("model-backed web search should expose one function");
+        };
+
+        registry.config_contributors()[0].on_config_changed(
+            &session_store,
+            &thread_store,
+            &model_config,
+            &config,
+        );
+        let Some(ToolSpec::Namespace(tinyfish_namespace)) = web_run_spec() else {
+            panic!("TinyFish web search should contribute web.run");
+        };
+        let [ResponsesApiNamespaceTool::Function(tinyfish_function)] =
+            tinyfish_namespace.tools.as_slice()
+        else {
+            panic!("TinyFish web search should expose one function");
+        };
+        let tinyfish_properties = serde_json::to_value(&tinyfish_function.parameters)
+            .expect("schema should serialize")["properties"]
+            .as_object()
+            .expect("schema properties should be an object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            (
+                tinyfish_properties,
+                tinyfish_function.description.len() < 1_024,
+                tinyfish_function.description != model_function.description,
+            ),
+            (
+                vec!["response_length".to_string(), "search_query".to_string()],
+                true,
+                true,
+            )
+        );
+
+        let mut disabled_config = config.clone();
+        disabled_config
+            .web_search_mode
+            .set(WebSearchMode::Disabled)
+            .expect("web search mode should be mutable in tests");
+        registry.config_contributors()[0].on_config_changed(
+            &session_store,
+            &thread_store,
+            &config,
+            &disabled_config,
+        );
+        assert!(web_run_spec().is_none());
     }
 }
