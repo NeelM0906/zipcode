@@ -3,13 +3,18 @@ use codex_api::LocationType;
 use codex_api::SearchFilters;
 use codex_api::SearchResponseLength;
 use codex_api::SearchSettings;
+use codex_extension_api::FunctionCallError;
+use codex_utils_redacted_string::RedactedString;
 use pretty_assertions::assert_eq;
 
 use crate::schema::TinyFishCommands;
 use crate::schema::TinyFishSearchQuery;
 use crate::schema::tinyfish_commands_schema;
 use crate::tinyfish_request::TinyFishSearchRequest;
-use crate::tinyfish_request::prepare_tinyfish_requests;
+use crate::tinyfish_request::prepare_tinyfish_requests as prepare_tinyfish_requests_with_api_key;
+use crate::tinyfish_request::tinyfish_review_command;
+
+const API_KEY: &str = "x7Qp4mN9vL2sR8tW";
 
 #[test]
 fn tinyfish_schema_accepts_only_one_to_four_search_queries() {
@@ -175,6 +180,40 @@ fn rejects_queries_that_contain_recognized_secrets() {
 }
 
 #[test]
+fn review_command_rejects_the_configured_api_key_from_every_request_field() {
+    let api_key = RedactedString::from(API_KEY);
+    let requests = [
+        TinyFishSearchRequest {
+            query: format!("find {API_KEY}"),
+            domains: None,
+            recency_days: None,
+            location: None,
+        },
+        TinyFishSearchRequest {
+            query: "rust".to_string(),
+            domains: Some(vec![format!("docs.{API_KEY}.example")]),
+            recency_days: None,
+            location: None,
+        },
+        TinyFishSearchRequest {
+            query: "rust".to_string(),
+            domains: None,
+            recency_days: None,
+            location: Some(format!("US-{API_KEY}")),
+        },
+    ];
+
+    for request in requests {
+        assert_eq!(
+            tinyfish_review_command(&[request], &api_key),
+            Err(FunctionCallError::RespondToModel(
+                "TinyFish web search queries must not contain credentials or secrets".to_string()
+            ))
+        );
+    }
+}
+
+#[test]
 fn rejects_recency_outside_the_supported_range() {
     for recency in [0, 3_651, u64::MAX] {
         let mut query = search_query("rust");
@@ -288,4 +327,11 @@ fn search_query(q: &str) -> TinyFishSearchQuery {
         recency: None,
         domains: None,
     }
+}
+
+fn prepare_tinyfish_requests(
+    commands: &TinyFishCommands,
+    settings: &SearchSettings,
+) -> Result<Vec<TinyFishSearchRequest>, FunctionCallError> {
+    prepare_tinyfish_requests_with_api_key(commands, settings, &RedactedString::from(API_KEY))
 }

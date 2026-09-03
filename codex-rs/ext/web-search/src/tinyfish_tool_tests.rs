@@ -46,6 +46,8 @@ use crate::tool::WebSearchTool;
 const API_KEY: &str = "tf-private-api-key";
 const MAX_SERIALIZED_ITEM_BYTES: usize = 10_000;
 
+const UNRECOGNIZED_API_KEY: &str = "x7Qp4mN9vL2sR8tW";
+
 #[test]
 fn tinyfish_declares_the_exact_reviewable_test_egress() {
     let endpoint = Url::parse("http://127.0.0.1:43127/search").expect("valid test endpoint");
@@ -226,6 +228,79 @@ async fn invalid_tinyfish_inputs_fail_before_http_or_lifecycle_events() {
     assert!(received_requests(&server).await.is_empty());
     assert!(emitter.started.lock().expect("started lock").is_empty());
     assert!(emitter.completed.lock().expect("completed lock").is_empty());
+}
+
+#[tokio::test]
+async fn configured_tinyfish_key_is_rejected_from_every_outbound_field_before_side_effects() {
+    let endpoint = Url::parse("http://127.0.0.1:1").expect("valid unreachable test endpoint");
+    let cases = [
+        (
+            SearchSettings::default(),
+            serde_json::json!({
+                "search_query": [{"q": format!("find {UNRECOGNIZED_API_KEY}")}]
+            }),
+        ),
+        (
+            SearchSettings::default(),
+            serde_json::json!({
+                "search_query": [{
+                    "q": "rust",
+                    "domains": [format!("docs.{UNRECOGNIZED_API_KEY}.example")]
+                }]
+            }),
+        ),
+        (
+            SearchSettings {
+                user_location: Some(ApproximateLocation {
+                    r#type: LocationType::Approximate,
+                    country: Some(format!("US-{UNRECOGNIZED_API_KEY}")),
+                    region: None,
+                    city: None,
+                    timezone: None,
+                }),
+                ..Default::default()
+            },
+            serde_json::json!({"search_query": [{"q": "rust"}]}),
+        ),
+    ];
+
+    for (settings, arguments) in cases {
+        let tool = tinyfish_tool(endpoint.clone(), Some(UNRECOGNIZED_API_KEY), settings);
+        let payload = ToolPayload::Function {
+            arguments: arguments.to_string(),
+        };
+        let egress_error = tool
+            .network_egress(&payload)
+            .expect_err("the configured API key must not enter the review command");
+        assert_eq!(
+            egress_error,
+            FunctionCallError::RespondToModel(
+                "TinyFish web search queries must not contain credentials or secrets".to_string()
+            )
+        );
+        assert!(!egress_error.to_string().contains(UNRECOGNIZED_API_KEY));
+
+        let emitter = Arc::new(RecordingTurnItemEmitter::default());
+        let result = tool
+            .handle(tool_call(
+                arguments,
+                ConversationHistory::default(),
+                Arc::clone(&emitter) as Arc<dyn TurnItemEmitter>,
+            ))
+            .await;
+        let Err(error) = result else {
+            panic!("the configured API key must not be sent upstream");
+        };
+        assert_eq!(
+            error,
+            FunctionCallError::RespondToModel(
+                "TinyFish web search queries must not contain credentials or secrets".to_string()
+            )
+        );
+        assert!(!error.to_string().contains(UNRECOGNIZED_API_KEY));
+        assert!(emitter.started.lock().expect("started lock").is_empty());
+        assert!(emitter.completed.lock().expect("completed lock").is_empty());
+    }
 }
 
 #[tokio::test]

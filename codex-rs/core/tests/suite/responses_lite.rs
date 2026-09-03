@@ -446,9 +446,9 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
 
     const CALL_ID: &str = "tinyfish-web-run";
     const EXFIL_CALL_ID: &str = "tinyfish-secret-exfiltration";
-    const API_KEY: &str = "redacted-tinyfish-test-key";
+    const API_KEY: &str = "x7Qp4mN9vL2sR8tW";
     const QUERY: &str = "rust async traits";
-    const SECRET_QUERY: &str = "token=seeded-private-workspace-secret";
+    const SECRET_QUERY: &str = "find x7Qp4mN9vL2sR8tW";
 
     let server = responses::start_mock_server().await;
     let tinyfish_server = MockServer::start().await;
@@ -594,6 +594,18 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
         blocked_output.as_deref(),
         Some("TinyFish web search queries must not contain credentials or secrets")
     );
+    let guardian_requests = requests
+        .iter()
+        .filter(|request| {
+            request.body_json()["client_metadata"]["x-openai-subagent"].as_str() == Some("guardian")
+        })
+        .count();
+    assert_eq!(guardian_requests, 1);
+    let tinyfish_requests = tinyfish_server
+        .received_requests()
+        .await
+        .context("TinyFish requests should be available")?;
+    assert_eq!(tinyfish_requests.len(), 1);
 
     Ok(())
 }

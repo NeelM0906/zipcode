@@ -56,7 +56,7 @@ impl TinyFishRuntime {
         call: ToolCall<'_>,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let api_key = self.api_key()?;
-        let prepared = prepare_call(&call.payload, &tool.settings)?;
+        let prepared = prepare_call(&call.payload, &tool.settings, api_key)?;
         let commands = prepared.commands;
         let requests = prepared.requests;
         let client = self.client(api_key)?;
@@ -107,8 +107,8 @@ impl TinyFishRuntime {
         payload: &ToolPayload,
         settings: &codex_api::SearchSettings,
     ) -> Result<ToolNetworkEgress, FunctionCallError> {
-        self.api_key()?;
-        let prepared = prepare_call(payload, settings)?;
+        let api_key = self.api_key()?;
+        let prepared = prepare_call(payload, settings, api_key)?;
         let endpoint = self.endpoint()?;
         let protocol = match endpoint.scheme() {
             "http" => NetworkApprovalProtocol::Http,
@@ -201,6 +201,7 @@ struct PreparedTinyFishCall {
 fn prepare_call(
     payload: &ToolPayload,
     settings: &codex_api::SearchSettings,
+    api_key: &RedactedString,
 ) -> Result<PreparedTinyFishCall, FunctionCallError> {
     let ToolPayload::Function { arguments } = payload else {
         return Err(FunctionCallError::Fatal(
@@ -209,8 +210,8 @@ fn prepare_call(
     };
     let commands: TinyFishCommands = serde_json::from_str(arguments)
         .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
-    let requests = prepare_tinyfish_requests(&commands, settings)?;
-    let review_command = tinyfish_review_command(&requests)?;
+    let requests = prepare_tinyfish_requests(&commands, settings, api_key)?;
+    let review_command = tinyfish_review_command(&requests, api_key)?;
     Ok(PreparedTinyFishCall {
         commands,
         requests,

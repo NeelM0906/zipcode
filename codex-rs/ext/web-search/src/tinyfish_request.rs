@@ -1,6 +1,7 @@
 use codex_api::SearchSettings;
 use codex_extension_api::FunctionCallError;
 use codex_secrets::redact_secrets;
+use codex_utils_redacted_string::RedactedString;
 use serde::Serialize;
 
 use crate::schema::TinyFishCommands;
@@ -18,16 +19,16 @@ pub(crate) struct TinyFishSearchRequest {
 
 pub(crate) fn tinyfish_review_command(
     requests: &[TinyFishSearchRequest],
+    api_key: &RedactedString,
 ) -> Result<Vec<String>, FunctionCallError> {
+    reject_configured_api_key(requests, api_key)?;
     let requests = serde_json::to_string(requests).map_err(|err| {
         FunctionCallError::Fatal(format!(
             "failed to serialize TinyFish web search for security review: {err}"
         ))
     })?;
     if redact_secrets(requests.clone()) != requests {
-        return Err(FunctionCallError::RespondToModel(
-            "TinyFish web search queries must not contain credentials or secrets".to_string(),
-        ));
+        return Err(credentials_error());
     }
     let command = vec!["web.run".to_string(), requests];
     let serialized_len = serde_json::to_vec(&command)
@@ -48,6 +49,7 @@ pub(crate) fn tinyfish_review_command(
 pub(crate) fn prepare_tinyfish_requests(
     commands: &TinyFishCommands,
     settings: &SearchSettings,
+    api_key: &RedactedString,
 ) -> Result<Vec<TinyFishSearchRequest>, FunctionCallError> {
     if !(1..=4).contains(&commands.search_query.len()) {
         return Err(FunctionCallError::RespondToModel(
@@ -72,7 +74,7 @@ pub(crate) fn prepare_tinyfish_requests(
         .filter(|country| !country.is_empty())
         .map(str::to_string);
 
-    commands
+    let requests = commands
         .search_query
         .iter()
         .map(|query| {
@@ -83,10 +85,7 @@ pub(crate) fn prepare_tinyfish_requests(
                 ));
             }
             if redact_secrets(query_text.to_string()) != query_text {
-                return Err(FunctionCallError::RespondToModel(
-                    "TinyFish web search queries must not contain credentials or secrets"
-                        .to_string(),
-                ));
+                return Err(credentials_error());
             }
             if query
                 .recency
@@ -104,7 +103,38 @@ pub(crate) fn prepare_tinyfish_requests(
                 location: location.clone(),
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    reject_configured_api_key(&requests, api_key)?;
+    Ok(requests)
+}
+
+fn reject_configured_api_key(
+    requests: &[TinyFishSearchRequest],
+    api_key: &RedactedString,
+) -> Result<(), FunctionCallError> {
+    let api_key = api_key.as_str();
+    if !api_key.is_empty()
+        && requests.iter().any(|request| {
+            request.query.contains(api_key)
+                || request
+                    .domains
+                    .as_ref()
+                    .is_some_and(|domains| domains.iter().any(|domain| domain.contains(api_key)))
+                || request
+                    .location
+                    .as_deref()
+                    .is_some_and(|location| location.contains(api_key))
+        })
+    {
+        return Err(credentials_error());
+    }
+    Ok(())
+}
+
+fn credentials_error() -> FunctionCallError {
+    FunctionCallError::RespondToModel(
+        "TinyFish web search queries must not contain credentials or secrets".to_string(),
+    )
 }
 
 fn effective_domains(
