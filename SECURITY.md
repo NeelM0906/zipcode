@@ -28,13 +28,14 @@ model service a hard multi-tenant isolation boundary.
   must never be committed to Git.
 
 The inference gateway logs request IDs and tool structure rather than request
-bodies or authorization headers. Separately, the released client writes a full
-rollout bundle under `~/.zipcode/trace-spool` and uploads completed bundles to
-the private Supabase trace store after explicit policy acceptance. ZIPCODE
-session tokens and HTTP authorization headers are not serialized into those
-bundles. Secrets entered in prompts, checked-in files, commands, or tool output
-can still appear in a trace and must be treated as collected data. See
-[TRACE_DATA.md](TRACE_DATA.md).
+bodies or authorization headers. Separately, unless launched with
+`ZIPCODE_DISABLE_TRACE_UPLOAD=1`, the released client writes a full rollout
+bundle under `~/.zipcode/trace-spool` and uploads completed bundles to the
+private Supabase trace store after explicit policy acceptance. The opt-out
+disables both capture and upload. ZIPCODE session tokens and HTTP authorization
+headers are not serialized into bundles. Secrets entered in prompts,
+checked-in files, commands, or tool output can still appear in a trace and must
+be treated as collected data. See [TRACE_DATA.md](TRACE_DATA.md).
 
 ## Reporting
 

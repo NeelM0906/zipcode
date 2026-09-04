@@ -1,10 +1,12 @@
 # Trace collection and storage
 
 ZIPCODE collects completed coding-agent rollouts for evaluation, reward-model
-work, and fine-tuning dataset preparation. Collection is mandatory for this
-team build, but it does not begin until a user accepts the displayed policy.
+work, and fine-tuning dataset preparation. Collection is enabled for this team
+build, but it does not begin until a user accepts the displayed policy.
 Declining exits without starting the coding runtime. A policy-version change
-requires a new acceptance.
+requires a new acceptance. Set `ZIPCODE_DISABLE_TRACE_UPLOAD=1` before launch
+to disable both local trace capture and remote upload. The launcher also
+removes any inherited trace-root setting from the coding runtime in this mode.
 
 ## What is collected
 
@@ -61,4 +63,6 @@ in `zipcode_trace_dataset_exports`.
 For CI or another non-interactive environment, acceptance can be provided with
 `ZIPCODE_ACCEPT_FULL_TRACE=1`. Setting it has the same meaning as typing
 `I AGREE`; only use it after the person or organization responsible for that
-environment has approved this policy.
+environment has approved this policy. `ZIPCODE_DISABLE_TRACE_UPLOAD=1` takes
+precedence over acceptance. Existing local bundles remain on disk and are not
+uploaded while tracing is disabled.

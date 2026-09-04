@@ -7,6 +7,7 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
@@ -18,8 +19,66 @@ use std::time::UNIX_EPOCH;
 mod trace_upload;
 
 const DEFAULT_API_URL: &str = "https://notzipcode.ngrok.io/v1";
+const DISABLE_TRACE_UPLOAD_ENV: &str = "ZIPCODE_DISABLE_TRACE_UPLOAD";
 const KEYRING_SERVICE: &str = "ZIPCODE";
 const KEYRING_ACCOUNT: &str = "team-session";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TraceUploadMode {
+    Enabled,
+    Disabled,
+}
+
+impl TraceUploadMode {
+    fn from_env() -> Self {
+        std::env::var_os(DISABLE_TRACE_UPLOAD_ENV)
+            .as_deref()
+            .map(Self::from_disable_value)
+            .unwrap_or(Self::Enabled)
+    }
+
+    fn from_disable_value(value: &OsStr) -> Self {
+        if value == "1" {
+            Self::Disabled
+        } else {
+            Self::Enabled
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TraceSetup {
+    Enabled {
+        consent: trace_upload::CaptureConsent,
+        root: PathBuf,
+    },
+    Disabled,
+}
+
+impl TraceSetup {
+    fn prepare(home: &Path, mode: TraceUploadMode) -> Result<Self> {
+        match mode {
+            TraceUploadMode::Enabled => {
+                let consent = trace_upload::ensure_capture_consent(home)?;
+                let root = home.join("trace-spool");
+                std::fs::create_dir_all(&root)?;
+                Ok(Self::Enabled { consent, root })
+            }
+            TraceUploadMode::Disabled => Ok(Self::Disabled),
+        }
+    }
+
+    fn configure_command(&self, command: &mut Command) {
+        match self {
+            Self::Enabled { root, .. } => {
+                command.env(codex_rollout_trace::CODEX_ROLLOUT_TRACE_ROOT_ENV, root);
+            }
+            Self::Disabled => {
+                command.env_remove(codex_rollout_trace::CODEX_ROLLOUT_TRACE_ROOT_ENV);
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Session {
@@ -295,12 +354,11 @@ async fn launch_core(args: &[OsString]) -> Result<()> {
     let home = zipcode_home()?;
     std::fs::create_dir_all(&home)?;
     ensure_config(&home)?;
-    let consent = trace_upload::ensure_capture_consent(&home)?;
-    let trace_root = home.join("trace-spool");
-    std::fs::create_dir_all(&trace_root)?;
+    let trace_setup = TraceSetup::prepare(&home, TraceUploadMode::from_env())?;
 
-    if let Ok(token) = access_token().await
-        && let Err(error) = trace_upload::sync_completed_traces(&home, &token, &consent).await
+    if let TraceSetup::Enabled { consent, .. } = &trace_setup
+        && let Ok(token) = access_token().await
+        && let Err(error) = trace_upload::sync_completed_traces(&home, &token, consent).await
     {
         eprintln!("ZIPCODE: previous trace upload will be retried: {error:#}");
     }
@@ -315,19 +373,26 @@ async fn launch_core(args: &[OsString]) -> Result<()> {
         ])
         .args(args)
         .env("CODEX_HOME", &home)
-        .env("ZIPCODE_PRIVATE_MODE", "1")
-        .env("CODEX_ROLLOUT_TRACE_ROOT", &trace_root);
+        .env("ZIPCODE_PRIVATE_MODE", "1");
+    trace_setup.configure_command(&mut command);
     let status = command.status().context("launch ZIPCODE runtime")?;
 
-    match access_token().await {
-        Ok(token) => {
-            if let Err(error) = trace_upload::sync_completed_traces(&home, &token, &consent).await {
-                eprintln!("ZIPCODE: trace upload will be retried next run: {error:#}");
+    match trace_setup {
+        TraceSetup::Enabled { consent, .. } => match access_token().await {
+            Ok(token) => {
+                if let Err(error) =
+                    trace_upload::sync_completed_traces(&home, &token, &consent).await
+                {
+                    eprintln!("ZIPCODE: trace upload will be retried next run: {error:#}");
+                }
             }
-        }
-        Err(error) => {
-            eprintln!("ZIPCODE: trace upload needs a refreshed login and will retry: {error:#}");
-        }
+            Err(error) => {
+                eprintln!(
+                    "ZIPCODE: trace upload needs a refreshed login and will retry: {error:#}"
+                );
+            }
+        },
+        TraceSetup::Disabled => {}
     }
     std::process::exit(status.code().unwrap_or(1));
 }
@@ -560,10 +625,59 @@ impl From<SessionResponse> for Session {
 
 #[cfg(test)]
 mod tests {
+    use super::TraceSetup;
+    use super::TraceUploadMode;
     use super::migrate_legacy_config;
     use super::sibling_core;
     use super::toml_string;
+    use codex_rollout_trace::CODEX_ROLLOUT_TRACE_ROOT_ENV;
+    use pretty_assertions::assert_eq;
+    use std::ffi::OsStr;
+    use std::ffi::OsString;
     use std::path::Path;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    #[test]
+    fn recognizes_only_the_explicit_trace_upload_opt_out() {
+        assert_eq!(
+            TraceUploadMode::from_disable_value(OsStr::new("1")),
+            TraceUploadMode::Disabled
+        );
+        assert_eq!(
+            TraceUploadMode::from_disable_value(OsStr::new("true")),
+            TraceUploadMode::Enabled
+        );
+    }
+
+    #[test]
+    fn disabling_trace_upload_skips_capture_setup() {
+        let home = TempDir::new().expect("create temporary ZIPCODE home");
+
+        let setup = TraceSetup::prepare(home.path(), TraceUploadMode::Disabled)
+            .expect("disabled setup should not require consent");
+
+        assert_eq!(setup, TraceSetup::Disabled);
+        assert!(!home.path().join("full-trace-consent.json").exists());
+        assert!(!home.path().join("trace-spool").exists());
+    }
+
+    #[test]
+    fn disabling_trace_upload_removes_an_inherited_trace_root() {
+        let mut command = Command::new("zip-code-core");
+        command.env(CODEX_ROLLOUT_TRACE_ROOT_ENV, "/tmp/inherited-trace-root");
+
+        TraceSetup::Disabled.configure_command(&mut command);
+
+        let configured_environment = command
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(OsStr::to_owned)))
+            .collect::<Vec<(OsString, Option<OsString>)>>();
+        assert_eq!(
+            configured_environment,
+            vec![(OsString::from(CODEX_ROLLOUT_TRACE_ROOT_ENV), None)]
+        );
+    }
 
     #[test]
     fn core_is_next_to_launcher() {

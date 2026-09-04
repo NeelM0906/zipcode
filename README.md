@@ -44,8 +44,16 @@ zip-code
 
 `zip-code login` opens GitHub's device-authorization page. Your GitHub account
 must have an active ZIPCODE invitation. No OpenAI API key or ChatGPT account is
-used. On first launch, ZIPCODE displays its full-trace collection notice and
-requires explicit acceptance before the coding runtime starts.
+used. Unless tracing is disabled, the first launch displays ZIPCODE's
+full-trace collection notice and requires explicit acceptance before the coding
+runtime starts.
+
+To run without recording or uploading coding traces:
+
+```bash
+export ZIPCODE_DISABLE_TRACE_UPLOAD=1
+zip-code
+```
 
 Run a non-interactive task with:
 
@@ -96,8 +104,8 @@ model-reachable child-process environments.
 - A two-model Responses-compatible gateway for Qwen3.8 Flash-Next and 27B FP8.
 - Reproducible SGLang deployments, health checks, observability, benchmarks,
   and retained long-context evidence.
-- Consent-gated, full-fidelity rollout traces uploaded to private Supabase
-  Storage for evaluation and model-training dataset preparation.
+- Optional, consent-gated full-fidelity rollout traces uploaded to private
+  Supabase Storage for evaluation and model-training dataset preparation.
 - Native release builds for Linux x86_64, macOS Apple Silicon and Intel, and
   Windows x86_64.
 
@@ -148,10 +156,10 @@ zip-code
 Start with [the deployment guide](deploy/flash-next/README.md). Generate a
 random `ZIPCODE_JWT_SECRET`, mount a private authentication-data directory,
 invite the first GitHub login, and keep the origin bound to loopback behind the
-HTTPS edge. The inference gateway does not log request bodies, but the released
-ZIPCODE client deliberately records and uploads full agent rollouts after
-consent. See [Trace collection and storage](TRACE_DATA.md) before onboarding a
-team member.
+HTTPS edge. The inference gateway does not log request bodies. Unless disabled
+with `ZIPCODE_DISABLE_TRACE_UPLOAD=1`, the released ZIPCODE client records and
+uploads full agent rollouts after consent. See
+[Trace collection and storage](TRACE_DATA.md) before onboarding a team member.
 
 ## Provenance and license
 
