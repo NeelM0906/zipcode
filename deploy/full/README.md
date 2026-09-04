@@ -60,14 +60,16 @@ and multi-agent tools are disabled in this performance profile so hundreds of
 irrelevant schemas are not inserted into every coding turn.
 
 Codex 0.150 uses newer Responses API constructs that the pinned SGLang frontend
-does not accept directly. The gateway performs these lossless coding-path
-translations:
+does not accept directly. The gateway performs these coding-path compatibility
+transformations:
 
 - Responses-Lite `additional_tools` items to ordinary top-level tools
 - namespace members to SGLang-safe flat names and back
 - custom/freeform tool calls to JSON function calls and back
 - custom tool outputs to function outputs
 - stateless assistant replay normalization
+- Guardian structured-output compatibility for SGLang: preserve the required
+  JSON verdict while omitting only the reviewer's optional read-only tools
 - `xhigh`/`max` reasoning preservation across the router/model enum mismatch
 - Codex model-catalog metadata while preserving ordinary `/v1/models` behavior
 
