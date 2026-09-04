@@ -82,6 +82,36 @@ class ResponsesCompatibilityTests(unittest.TestCase):
         self.assertEqual(payload["input"], [message])
         self.assertEqual(payload["text"], text)
 
+    def test_full_model_guardian_does_not_leave_tool_choice_without_tools(self) -> None:
+        payload = {
+            "client_metadata": {"x-openai-subagent": "guardian"},
+            "input": [],
+            "tools": [_function_tool("shell")],
+            "tool_choice": "auto",
+            "text": {"format": _guardian_format()},
+        }
+
+        codex_gateway._prepare_responses_request(payload)
+
+        self.assertEqual(
+            payload["text"],
+            {
+                "format": {
+                    "type": "json_schema",
+                    "name": "guardian_assessment",
+                    "strict": False,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"outcome": {"enum": ["allow", "deny"]}},
+                        "required": ["outcome"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+        )
+        self.assertNotIn("tools", payload)
+        self.assertNotIn("tool_choice", payload)
+
     def test_ordinary_unconstrained_request_still_lifts_additional_tools(self) -> None:
         tool = _function_tool("exec")
         message = {
