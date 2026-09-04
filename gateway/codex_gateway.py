@@ -290,6 +290,7 @@ def _omit_guardian_tools_for_constrained_output(payload: dict[str, Any]) -> int:
 
     omitted = len(tools)
     payload.pop("tools")
+    payload.pop("tool_choice", None)
     _metric_transform("guardian_constrained_tool_omitted", omitted)
     return omitted
 
