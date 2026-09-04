@@ -449,6 +449,7 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
     const API_KEY: &str = "foo,bar";
     const QUERY: &str = "rust async traits";
     const SECRET_QUERY: &str = "find foo,bar";
+    const SPLIT_DOMAIN_QUERY: &str = "split-domain-input-canary";
 
     let server = responses::start_mock_server().await;
     let tinyfish_server = MockServer::start().await;
@@ -478,6 +479,45 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
             responses::sse(vec![
                 responses::ev_response_created("resp-1"),
                 responses::ev_function_call_with_namespace(
+                    EXFIL_CALL_ID,
+                    "web",
+                    "run",
+                    &serde_json::json!({
+                        "search_query": [{"q": SECRET_QUERY}],
+                        "response_length": "short",
+                    })
+                    .to_string(),
+                ),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-2"),
+                responses::ev_function_call_with_namespace(
+                    SPLIT_DOMAIN_CALL_ID,
+                    "web",
+                    "run",
+                    &serde_json::json!({
+                        "search_query": [{
+                            "q": SPLIT_DOMAIN_QUERY,
+                            "domains": ["foo", "bar"],
+                        }],
+                        "response_length": "short",
+                    })
+                    .to_string(),
+                ),
+                responses::ev_completed("resp-2"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-blocked-final"),
+                responses::ev_assistant_message(
+                    "msg-blocked-final",
+                    "The credential-bearing searches were blocked.",
+                ),
+                responses::ev_completed("resp-blocked-final"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-3"),
+                responses::ev_function_call_with_namespace(
                     CALL_ID,
                     "web",
                     "run",
@@ -487,7 +527,7 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
                     })
                     .to_string(),
                 ),
-                responses::ev_completed("resp-1"),
+                responses::ev_completed("resp-3"),
             ]),
             responses::sse(vec![
                 responses::ev_response_created("resp-guardian"),
@@ -502,37 +542,6 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
                     .to_string(),
                 ),
                 responses::ev_completed("resp-guardian"),
-            ]),
-            responses::sse(vec![
-                responses::ev_response_created("resp-2"),
-                responses::ev_function_call_with_namespace(
-                    EXFIL_CALL_ID,
-                    "web",
-                    "run",
-                    &serde_json::json!({
-                        "search_query": [{"q": SECRET_QUERY}],
-                        "response_length": "short",
-                    })
-                    .to_string(),
-                ),
-                responses::ev_completed("resp-2"),
-            ]),
-            responses::sse(vec![
-                responses::ev_response_created("resp-3"),
-                responses::ev_function_call_with_namespace(
-                    SPLIT_DOMAIN_CALL_ID,
-                    "web",
-                    "run",
-                    &serde_json::json!({
-                        "search_query": [{
-                            "q": "public documentation",
-                            "domains": ["foo", "bar"],
-                        }],
-                        "response_length": "short",
-                    })
-                    .to_string(),
-                ),
-                responses::ev_completed("resp-3"),
             ]),
             responses::sse(vec![
                 responses::ev_assistant_message("msg-1", "Search complete."),
@@ -567,17 +576,54 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
         });
     let test = builder.build_with_auto_env(&server).await?;
 
-    test.submit_turn("Search for Rust async traits").await?;
+    test.submit_turn("Try the credential-bearing searches")
+        .await?;
+    test.submit_turn("Now search for Rust async traits").await?;
 
     let requests = response_mock.requests();
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 6);
     let first_body = requests[0].body_json();
     assert!(has_namespaced_tool(
         additional_tools(&first_body)?,
         "web",
         "run"
     ));
-    let (output, success) = requests[2]
+    let (blocked_output, success) = requests[1]
+        .function_call_output_content_and_success(EXFIL_CALL_ID)
+        .context("secret-bearing TinyFish query should return a function call output")?;
+    assert_eq!(success, None);
+    assert_eq!(
+        blocked_output.as_deref(),
+        Some("TinyFish web search queries must not contain credentials or secrets")
+    );
+    let split_domain_output = requests[2]
+        .function_call_output_text(SPLIT_DOMAIN_CALL_ID)
+        .context("split-domain TinyFish query should return a function call output")?;
+    assert_eq!(
+        split_domain_output,
+        "TinyFish web search queries must not contain credentials or secrets"
+    );
+    assert!(
+        requests[3].body_json().to_string().contains(API_KEY),
+        "the primary model history should remain unchanged"
+    );
+    let guardian_request = requests
+        .iter()
+        .find(|request| {
+            request.body_json()["client_metadata"]["x-openai-subagent"].as_str() == Some("guardian")
+        })
+        .context("the benign TinyFish query should invoke Guardian")?;
+    let guardian_body = guardian_request.body_json().to_string();
+    assert!(!guardian_body.contains(SECRET_QUERY));
+    assert!(!guardian_body.contains(SPLIT_DOMAIN_QUERY));
+    assert!(!guardian_body.contains(API_KEY));
+    assert_eq!(
+        guardian_body
+            .matches("[tool call input omitted because no successful result is available]")
+            .count(),
+        2
+    );
+    let (output, success) = requests[5]
         .function_call_output_content_and_success(CALL_ID)
         .context("TinyFish web.run should return a function call output")?;
     assert_eq!(success, None);
@@ -601,21 +647,6 @@ async fn responses_lite_dispatches_tinyfish_web_search_output_to_the_model() -> 
                 }],
             }],
         })
-    );
-    let (blocked_output, success) = requests[3]
-        .function_call_output_content_and_success(EXFIL_CALL_ID)
-        .context("secret-bearing TinyFish query should return a function call output")?;
-    assert_eq!(success, None);
-    assert_eq!(
-        blocked_output.as_deref(),
-        Some("TinyFish web search queries must not contain credentials or secrets")
-    );
-    let split_domain_output = requests[4]
-        .function_call_output_text(SPLIT_DOMAIN_CALL_ID)
-        .context("split-domain TinyFish query should return a function call output")?;
-    assert_eq!(
-        split_domain_output,
-        "TinyFish web search queries must not contain credentials or secrets"
     );
     let guardian_requests = requests
         .iter()

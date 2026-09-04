@@ -2,6 +2,7 @@ use super::*;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseItem;
 use codex_utils_output_truncation::TruncationPolicy;
 use futures::future::BoxFuture;
@@ -626,7 +627,10 @@ fn post_tool_use_feedback_output_preserves_fallback_token_limit_override(
         ResponseItemEnvelope {
             item: ResponseItem::from(ResponseInputItem::FunctionCallOutput {
                 call_id: "call-1".to_string(),
-                output: FunctionCallOutputPayload::from_text("hook feedback".to_string()),
+                output: FunctionCallOutputPayload {
+                    body: FunctionCallOutputBody::Text("hook feedback".to_string()),
+                    success: Some(true),
+                },
             }),
             metadata: Some(CodexHarnessMetadata {
                 fallback_token_limit_override: Some(expected_token_limit),
@@ -637,15 +641,16 @@ fn post_tool_use_feedback_output_preserves_fallback_token_limit_override(
 }
 
 #[test]
-fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
+fn post_tool_use_feedback_output_keeps_code_mode_result_typed_and_failure_status() {
     let result = AnyToolResult {
         call_id: "call-1".to_string(),
         payload: ToolPayload::Function {
             arguments: "{}".to_string(),
         },
         result: Box::new(PostToolUseFeedbackOutput {
-            original: Box::new(codex_tools::JsonToolOutput::new(
+            original: Box::new(codex_tools::JsonToolOutput::with_success(
                 serde_json::json!({ "typed": true }),
+                Some(false),
             )),
             model_visible: crate::tools::context::FunctionToolOutput::from_text(
                 "hook feedback".to_string(),
@@ -660,9 +665,10 @@ fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
         ResponseItemEnvelope::new(
             ResponseInputItem::FunctionCallOutput {
                 call_id: "call-1".to_string(),
-                output: codex_protocol::models::FunctionCallOutputPayload::from_text(
-                    "hook feedback".to_string()
-                ),
+                output: FunctionCallOutputPayload {
+                    body: FunctionCallOutputBody::Text("hook feedback".to_string()),
+                    success: Some(false),
+                },
             }
             .into()
         )
@@ -674,8 +680,9 @@ fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
             arguments: "{}".to_string(),
         },
         result: Box::new(PostToolUseFeedbackOutput {
-            original: Box::new(codex_tools::JsonToolOutput::new(
+            original: Box::new(codex_tools::JsonToolOutput::with_success(
                 serde_json::json!({ "typed": true }),
+                Some(false),
             )),
             model_visible: crate::tools::context::FunctionToolOutput::from_text(
                 "hook feedback".to_string(),
