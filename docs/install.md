@@ -50,6 +50,10 @@ continue; the acceptance is stored in
 `~/.zipcode/full-trace-consent.json`. Read [Trace collection and
 storage](../TRACE_DATA.md) before accepting.
 
+To disable both trace capture and upload, set
+`ZIPCODE_DISABLE_TRACE_UPLOAD=1` in the environment before launching ZIPCODE.
+This setting takes precedence over a previously saved acceptance.
+
 ## Verify the download manually
 
 Each GitHub release includes `SHA256SUMS`. Download the archive and checksum
