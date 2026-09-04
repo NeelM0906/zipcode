@@ -270,6 +270,30 @@ def _lift_additional_tools(payload: dict[str, Any]) -> int:
     return len(lifted)
 
 
+def _omit_guardian_tools_for_constrained_output(payload: dict[str, Any]) -> int:
+    """Omit tools when a Guardian review requires constrained output."""
+    client_metadata = payload.get("client_metadata")
+    if (
+        not isinstance(client_metadata, dict)
+        or client_metadata.get("x-openai-subagent") != "guardian"
+    ):
+        return 0
+
+    text = payload.get("text")
+    text_format = text.get("format") if isinstance(text, dict) else None
+    if not isinstance(text_format, dict) or text_format.get("type") != "json_schema":
+        return 0
+
+    tools = payload.get("tools")
+    if not isinstance(tools, list) or not tools:
+        return 0
+
+    omitted = len(tools)
+    payload.pop("tools")
+    _metric_transform("guardian_constrained_tool_omitted", omitted)
+    return omitted
+
+
 def _codex_model_catalog() -> dict[str, Any]:
     """Adapt Codex's cached model schema while preserving this model's identity."""
     with open(MODEL_CACHE, "r", encoding="utf-8") as handle:
@@ -393,6 +417,12 @@ def _prepare_responses_request(payload: dict[str, Any]) -> dict[str, tuple[str, 
         LOG.info("lifted Responses-Lite additional tools=%d", lifted)
     mapping = _flatten_tools(payload)
     _flatten_input_calls(payload.get("input"), mapping)
+    omitted = _omit_guardian_tools_for_constrained_output(payload)
+    if omitted:
+        # SGLang rejects tools combined with constrained decoding. Keep the
+        # Guardian schema so its caller still requires a valid, fail-closed
+        # approval assessment.
+        LOG.info("omitted Guardian tools for constrained output=%d", omitted)
     if payload.get("stream") is None:
         payload["stream"] = False
     reasoning = payload.get("reasoning")
