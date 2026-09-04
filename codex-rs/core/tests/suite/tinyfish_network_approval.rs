@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -11,6 +12,10 @@ use codex_login::CodexAuth;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchProvider;
+use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
+use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
+use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::user_input::UserInput;
@@ -32,6 +37,50 @@ use wiremock::matchers::path;
 use wiremock::matchers::query_param;
 
 struct AutoApprovingReviewContributor;
+
+fn competing_dynamic_web_run() -> DynamicToolSpec {
+    DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+        name: "web".to_string(),
+        description: "Competing client-provided web tools.".to_string(),
+        tools: vec![DynamicToolNamespaceTool::Function(
+            DynamicToolFunctionSpec {
+                name: "run".to_string(),
+                description: "Client-provided web search that TinyFish must replace.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "search_query": {"type": "array"},
+                        "response_length": {"type": "string"},
+                    },
+                    "required": ["search_query"],
+                    "additionalProperties": false,
+                }),
+                defer_loading: false,
+            },
+        )],
+    })
+}
+
+fn configure_non_lite_tinyfish(config: &mut Config) {
+    assert!(config.web_search_mode.set(WebSearchMode::Live).is_ok());
+    assert!(
+        config
+            .features
+            .disable(Feature::StandaloneWebSearch)
+            .is_ok()
+    );
+    config
+        .web_search_config
+        .get_or_insert_with(Default::default)
+        .provider = WebSearchProvider::Tinyfish;
+}
+
+fn competing_web_run_options(config: Config) -> StartThreadOptions {
+    StartThreadOptions {
+        dynamic_tools: vec![competing_dynamic_web_run()],
+        ..StartThreadOptions::new(config)
+    }
+}
 
 impl codex_extension_api::ApprovalReviewContributor for AutoApprovingReviewContributor {
     fn fast_decision<'a>(
@@ -224,21 +273,18 @@ else:
             model_info.use_responses_lite = false;
         })
         .with_config(trust_discovered_hooks)
+        .with_config(configure_non_lite_tinyfish)
         .with_config(|config| {
-            assert!(config.web_search_mode.set(WebSearchMode::Live).is_ok());
-            assert!(
-                config
-                    .features
-                    .disable(Feature::StandaloneWebSearch)
-                    .is_ok()
-            );
-            config
-                .web_search_config
-                .get_or_insert_with(Default::default)
-                .provider = WebSearchProvider::Tinyfish;
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
         });
-    let test = builder.build_with_auto_env(&server).await?;
+    let base_test = builder.build_with_auto_env(&server).await?;
+    let new_thread = base_test
+        .thread_manager
+        .start_thread(competing_web_run_options(base_test.config.clone()))
+        .await?;
+    let mut test = base_test;
+    test.codex = new_thread.thread;
+    test.session_configured = new_thread.session_configured;
 
     test.codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -281,6 +327,12 @@ else:
             })
     }));
     assert!(tools.iter().all(|tool| tool["type"] != "web_search"));
+    assert!(
+        !first_request
+            .to_string()
+            .contains("Client-provided web search that TinyFish must replace."),
+        "the colliding dynamic web.run must not replace TinyFish"
+    );
     let guardian_requests = requests
         .iter()
         .filter(|request| {
@@ -323,6 +375,123 @@ else:
         .function_call_output_text(EXFIL_CALL_ID)
         .context("denied TinyFish call should return an output to the parent model")?;
     assert!(rejected_output.contains("unauthorized private-data query"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_lite_tinyfish_strict_collision_fails_before_sampling() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let auth = CodexAuth::from_api_key("dummy");
+    let auth_manager = codex_core::test_support::auth_manager_from_auth(auth.clone());
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    install_tinyfish(
+        &mut extensions,
+        auth_manager,
+        Url::parse("https://tinyfish.invalid/")?,
+        "fake-tinyfish-api-key-for-strict-collision".into(),
+    );
+    let mut builder = test_codex()
+        .with_auth(auth)
+        .with_extensions(Arc::new(extensions.build()))
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = false;
+        })
+        .with_config(configure_non_lite_tinyfish)
+        .with_config(|config| {
+            config.tool_registry.error_on_tool_collisions = true;
+        });
+    let base_test = builder.build_with_auto_env(&server).await?;
+    let thread = base_test
+        .thread_manager
+        .start_thread(competing_web_run_options(base_test.config.clone()))
+        .await?
+        .thread;
+
+    thread
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Search for Rust async traits".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+
+    let EventMsg::Error(error) =
+        wait_for_event(&thread, |event| matches!(event, EventMsg::Error(_))).await
+    else {
+        unreachable!("event predicate guarantees an error");
+    };
+    assert_eq!(error.message, "duplicate tool: web.run");
+
+    let EventMsg::TurnComplete(completed) =
+        wait_for_event(&thread, |event| matches!(event, EventMsg::TurnComplete(_))).await
+    else {
+        unreachable!("event predicate guarantees turn completion");
+    };
+    assert_eq!(completed.error, Some(error));
+    assert!(
+        server
+            .received_requests()
+            .await
+            .context("mock server should expose received requests")?
+            .iter()
+            .all(|request| request.url.path() != "/v1/responses"),
+        "a strict TinyFish collision should fail before sampling"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_lite_tinyfish_without_executor_hides_competing_web_run_and_hosted_fallback()
+-> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-no-tinyfish-executor"),
+            responses::ev_assistant_message("msg-no-tinyfish-executor", "No search available."),
+            responses::ev_completed("resp-no-tinyfish-executor"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = false;
+        })
+        .with_config(configure_non_lite_tinyfish);
+    let base_test = builder.build_with_auto_env(&server).await?;
+    let thread = base_test
+        .thread_manager
+        .start_thread(competing_web_run_options(base_test.config.clone()))
+        .await?
+        .thread;
+
+    thread
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Search for Rust async traits".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let request = response_mock.single_request();
+    let request_body = request.body_json();
+    let tools = request_body["tools"]
+        .as_array()
+        .context("non-lite request should advertise tools")?;
+    assert!(
+        tools.iter().all(|tool| tool["name"] != "web"),
+        "TinyFish without an executor must not fall through to a colliding dynamic web.run"
+    );
+    assert!(
+        tools.iter().all(|tool| tool["type"] != "web_search"),
+        "TinyFish selection must not fall back to hosted web search"
+    );
 
     Ok(())
 }

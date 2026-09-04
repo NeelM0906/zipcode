@@ -1005,6 +1005,20 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
     assert_eq!(guardian_requests.len(), 3);
     let first_guardian_request = guardian_requests[0].body_json();
     let second_guardian_request = guardian_requests[2].body_json();
+    let first_guardian_prompt = guardian_requests[0]
+        .message_input_text_groups("user")
+        .last()
+        .expect("first Guardian review prompt")
+        .join("");
+    let second_guardian_prompt = guardian_requests[2]
+        .message_input_text_groups("user")
+        .last()
+        .expect("second Guardian review prompt")
+        .join("");
+    assert!(!first_guardian_prompt.contains("tool exec_command call:"));
+    assert!(second_guardian_prompt.contains(">>> TRANSCRIPT DELTA START\n"));
+    assert!(second_guardian_prompt.contains("tool exec_command call:"));
+    assert!(second_guardian_prompt.contains(&first_command));
     let first_parent_request = requests[0].body_json();
     let second_parent_request = requests[4].body_json();
     let first_parent_turn_id = first_parent_request["client_metadata"]["turn_id"]

@@ -201,8 +201,14 @@ impl AnyToolResult {
             result,
             ..
         } = self;
+        let mut item = result.to_response_item(&call_id, &payload);
+        if let ResponseInputItem::FunctionCallOutput { output, .. }
+        | ResponseInputItem::CustomToolCallOutput { output, .. } = &mut item
+        {
+            output.success.get_or_insert(result.success_for_logging());
+        }
         ResponseItemEnvelope {
-            item: result.to_response_item(&call_id, &payload).into(),
+            item: item.into(),
             metadata: result
                 .fallback_token_limit_override()
                 .map(|limit| CodexHarnessMetadata {

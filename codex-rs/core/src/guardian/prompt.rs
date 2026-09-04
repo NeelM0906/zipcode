@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use codex_protocol::mcp::is_node_repl_backed_tool;
 use codex_protocol::models::ResponseItem;
@@ -37,6 +38,8 @@ use super::TRUNCATION_TAG;
 use super::approval_request::format_guardian_action_pretty;
 
 const GUARDIAN_MAX_APPROVAL_REASON_TOKENS: usize = 512;
+const GUARDIAN_TOOL_INPUT_OMITTED: &str =
+    "[tool call input omitted because no successful result is available]";
 pub(super) const GUARDIAN_TRANSCRIPT_START: &str = ">>> TRANSCRIPT START\n";
 
 /// Transcript entry retained for guardian review after filtering.
@@ -53,6 +56,13 @@ pub(crate) enum GuardianTranscriptEntryKind {
     Assistant,
     Tool(String),
     NodeReplToolResult(String),
+}
+
+#[derive(Clone, Copy)]
+enum GuardianToolCallState<'a> {
+    Pending { name: &'a str, input: &'a str },
+    Completed,
+    Ambiguous { name: &'a str, has_input: bool },
 }
 
 impl GuardianTranscriptEntryKind {
@@ -520,14 +530,21 @@ fn render_guardian_transcript_entries_with_offset(
 /// would just add noise because the guardian reviewer already gets the normal
 /// inherited top-level context from session startup.
 ///
-/// Keep both tool calls and tool results here. The reviewer often needs the
-/// agent's exact queried path / arguments as well as the returned evidence to
-/// decide whether the pending approval is justified.
+/// Keep completed tool calls and tool results here. The reviewer often needs
+/// the agent's exact queried path / arguments as well as the returned evidence
+/// to decide whether the pending approval is justified. A call is appended at
+/// its first unambiguous output so later history appends never rewrite an
+/// already-reviewed transcript prefix. Inputs for failed or ambiguous calls,
+/// and calls whose internal completion status was not retained, are replaced
+/// with a fixed placeholder because failed extension validation may leave
+/// credentials in the raw arguments. Pending calls remain withheld until an
+/// output is available.
 pub(crate) fn collect_guardian_transcript_entries<'a>(
     items: impl IntoIterator<Item = &'a ResponseItem>,
 ) -> Vec<GuardianTranscriptEntry> {
     let mut entries = Vec::new();
     let mut tool_names_by_call_id = HashMap::new();
+    let mut tool_call_state_by_id = HashMap::new();
     let non_empty_entry = |kind, text: String| {
         (!text.trim().is_empty()).then_some(GuardianTranscriptEntry { kind, text })
     };
@@ -537,6 +554,90 @@ pub(crate) fn collect_guardian_transcript_entries<'a>(
         |kind, serialized: Option<String>| serialized.and_then(|text| non_empty_entry(kind, text));
 
     for item in items {
+        if let Some((call_id, name, namespace, input)) = match item {
+            ResponseItem::FunctionCall {
+                call_id,
+                name,
+                namespace,
+                arguments,
+                ..
+            } => Some((
+                call_id.as_str(),
+                name.as_str(),
+                namespace.as_deref(),
+                arguments.as_str(),
+            )),
+            ResponseItem::CustomToolCall {
+                call_id,
+                name,
+                namespace,
+                input,
+                ..
+            } => Some((
+                call_id.as_str(),
+                name.as_str(),
+                namespace.as_deref(),
+                input.as_str(),
+            )),
+            _ => None,
+        } {
+            tool_names_by_call_id.insert(call_id, (name, namespace));
+            match tool_call_state_by_id.entry(call_id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(GuardianToolCallState::Pending { name, input });
+                }
+                Entry::Occupied(mut entry) => {
+                    let has_input = match entry.get() {
+                        GuardianToolCallState::Pending { input, .. } => !input.trim().is_empty(),
+                        GuardianToolCallState::Ambiguous { has_input, .. } => *has_input,
+                        GuardianToolCallState::Completed => false,
+                    } || !input.trim().is_empty();
+                    entry.insert(GuardianToolCallState::Ambiguous { name, has_input });
+                }
+            }
+        }
+
+        if let Some((call_id, output)) = match item {
+            ResponseItem::FunctionCallOutput {
+                call_id: Some(call_id),
+                output,
+                ..
+            }
+            | ResponseItem::CustomToolCallOutput {
+                call_id, output, ..
+            } => Some((call_id.as_str(), output)),
+            _ => None,
+        } {
+            let completed_call = match tool_call_state_by_id.remove(call_id) {
+                Some(GuardianToolCallState::Pending { name, input }) => {
+                    tool_call_state_by_id.insert(call_id, GuardianToolCallState::Completed);
+                    (!input.trim().is_empty()).then(|| GuardianTranscriptEntry {
+                        kind: GuardianTranscriptEntryKind::Tool(format!("tool {name} call")),
+                        text: if output.success == Some(true) {
+                            input.to_string()
+                        } else {
+                            GUARDIAN_TOOL_INPUT_OMITTED.to_string()
+                        },
+                    })
+                }
+                Some(GuardianToolCallState::Ambiguous { name, has_input }) => {
+                    tool_call_state_by_id.insert(call_id, GuardianToolCallState::Completed);
+                    has_input.then(|| GuardianTranscriptEntry {
+                        kind: GuardianTranscriptEntryKind::Tool(format!("tool {name} call")),
+                        text: GUARDIAN_TOOL_INPUT_OMITTED.to_string(),
+                    })
+                }
+                Some(GuardianToolCallState::Completed) => {
+                    tool_call_state_by_id.insert(call_id, GuardianToolCallState::Completed);
+                    None
+                }
+                None => None,
+            };
+            if let Some(completed_call) = completed_call {
+                entries.push(completed_call);
+            }
+        }
+
         let entry = match item {
             ResponseItem::Message { role, content, .. } if role == "user" => {
                 if is_contextual_user_message_content(content) {
@@ -570,34 +671,7 @@ pub(crate) fn collect_guardian_transcript_entries<'a>(
                 GuardianTranscriptEntryKind::Tool("tool shell call".to_string()),
                 serde_json::to_string(action).ok(),
             ),
-            ResponseItem::FunctionCall {
-                call_id,
-                name,
-                namespace,
-                arguments,
-                ..
-            } => {
-                tool_names_by_call_id
-                    .insert(call_id.as_str(), (name.as_str(), namespace.as_deref()));
-                (!arguments.trim().is_empty()).then(|| GuardianTranscriptEntry {
-                    kind: GuardianTranscriptEntryKind::Tool(format!("tool {name} call")),
-                    text: arguments.clone(),
-                })
-            }
-            ResponseItem::CustomToolCall {
-                call_id,
-                name,
-                namespace,
-                input,
-                ..
-            } => {
-                tool_names_by_call_id
-                    .insert(call_id.as_str(), (name.as_str(), namespace.as_deref()));
-                (!input.trim().is_empty()).then(|| GuardianTranscriptEntry {
-                    kind: GuardianTranscriptEntryKind::Tool(format!("tool {name} call")),
-                    text: input.clone(),
-                })
-            }
+            ResponseItem::FunctionCall { .. } | ResponseItem::CustomToolCall { .. } => None,
             ResponseItem::WebSearchCall { action, .. } => action.as_ref().and_then(|action| {
                 serialized_entry(
                     GuardianTranscriptEntryKind::Tool("tool web_search call".to_string()),

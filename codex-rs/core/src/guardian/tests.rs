@@ -42,7 +42,9 @@ use codex_protocol::approvals::GuardianAssessmentAction;
 use codex_protocol::approvals::NetworkApprovalProtocol;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SandboxPermissions;
@@ -299,6 +301,64 @@ fn guardian_exec_command_request(id: &str) -> GuardianApprovalRequest {
     }
 }
 
+fn guardian_function_call(name: &str, call_id: &str, arguments: &str) -> ResponseItem {
+    ResponseItem::FunctionCall {
+        id: None,
+        name: name.to_string(),
+        namespace: None,
+        arguments: arguments.to_string(),
+        call_id: call_id.to_string(),
+        encrypted_function_args: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+fn guardian_custom_tool_call(name: &str, call_id: &str, input: &str) -> ResponseItem {
+    ResponseItem::CustomToolCall {
+        id: None,
+        status: None,
+        call_id: call_id.to_string(),
+        name: name.to_string(),
+        namespace: None,
+        input: input.to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+fn guardian_function_output(call_id: &str, text: &str, success: Option<bool>) -> ResponseItem {
+    ResponseItem::FunctionCallOutput {
+        id: None,
+        call_id: Some(call_id.to_string()),
+        name: None,
+        namespace: None,
+        output: FunctionCallOutputPayload {
+            body: FunctionCallOutputBody::Text(text.to_string()),
+            success,
+        },
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+fn guardian_custom_tool_output(call_id: &str, text: &str, success: Option<bool>) -> ResponseItem {
+    ResponseItem::CustomToolCallOutput {
+        id: None,
+        call_id: call_id.to_string(),
+        name: None,
+        output: FunctionCallOutputPayload {
+            body: FunctionCallOutputBody::Text(text.to_string()),
+            success,
+        },
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+fn guardian_tool_entry(name: &str, phase: &str, text: &str) -> GuardianTranscriptEntry {
+    GuardianTranscriptEntry {
+        kind: GuardianTranscriptEntryKind::Tool(format!("tool {name} {phase}")),
+        text: text.to_string(),
+    }
+}
+
 fn guardian_mcp_request(server: &str, tool_name: &str) -> GuardianApprovalRequest {
     GuardianApprovalRequest::McpToolCall {
         id: "mcp-1".to_string(),
@@ -356,25 +416,12 @@ async fn seed_guardian_parent_history(session: &Arc<Session>, turn: &Arc<TurnCon
                     phase: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
-                ResponseItem::FunctionCall {
-                    id: None,
-                    name: "gh_repo_view".to_string(),
-                    namespace: None,
-                    arguments: "{\"repo\":\"openai/codex\"}".to_string(),
-                    call_id: "call-1".to_string(),
-                    encrypted_function_args: None,
-                    internal_chat_message_metadata_passthrough: None,
-                },
-                ResponseItem::FunctionCallOutput {
-                    id: None,
-                    call_id: Some("call-1".to_string()),
-                    name: None,
-                    namespace: None,
-                    output: codex_protocol::models::FunctionCallOutputPayload::from_text(
-                        "repo visibility: public".to_string(),
-                    ),
-                    internal_chat_message_metadata_passthrough: None,
-                },
+                guardian_function_call("gh_repo_view", "call-1", "{\"repo\":\"openai/codex\"}"),
+                guardian_function_output(
+                    "call-1",
+                    "repo visibility: public",
+                    /*success*/ Some(true),
+                ),
                 ResponseItem::Message {
                     id: None,
                     role: "assistant".to_string(),
@@ -696,6 +743,13 @@ async fn build_guardian_prompt_includes_parent_turn_denied_reads() -> anyhow::Re
 async fn build_guardian_prompt_delta_mode_preserves_original_numbering() -> anyhow::Result<()> {
     let (session, turn) = guardian_test_session_and_turn_with_base_url("http://localhost").await;
     seed_guardian_parent_history(&session, &turn).await;
+    let first_prompt = build_guardian_prompt_items(
+        session.as_ref(),
+        /*retry_reason*/ None,
+        guardian_exec_command_request("shell-1"),
+        GuardianPromptMode::Full,
+    )
+    .await?;
     session
         .record_conversation_items(
             turn.as_ref(),
@@ -735,10 +789,7 @@ async fn build_guardian_prompt_delta_mode_preserves_original_numbering() -> anyh
             tty: false,
         },
         GuardianPromptMode::Delta {
-            cursor: GuardianTranscriptCursor {
-                parent_history_version: 0,
-                transcript_entry_count: 4,
-            },
+            cursor: first_prompt.transcript_cursor,
         },
     )
     .await?;
@@ -760,6 +811,13 @@ async fn build_guardian_prompt_delta_mode_preserves_original_numbering() -> anyh
 async fn build_guardian_prompt_delta_mode_handles_empty_delta() -> anyhow::Result<()> {
     let (session, turn) = guardian_test_session_and_turn_with_base_url("http://localhost").await;
     seed_guardian_parent_history(&session, &turn).await;
+    let first_prompt = build_guardian_prompt_items(
+        session.as_ref(),
+        /*retry_reason*/ None,
+        guardian_exec_command_request("shell-1"),
+        GuardianPromptMode::Full,
+    )
+    .await?;
 
     let prompt = build_guardian_prompt_items(
         session.as_ref(),
@@ -774,10 +832,7 @@ async fn build_guardian_prompt_delta_mode_handles_empty_delta() -> anyhow::Resul
             tty: false,
         },
         GuardianPromptMode::Delta {
-            cursor: GuardianTranscriptCursor {
-                parent_history_version: 0,
-                transcript_entry_count: 4,
-            },
+            cursor: first_prompt.transcript_cursor,
         },
     )
     .await?;
@@ -792,10 +847,71 @@ async fn build_guardian_prompt_delta_mode_handles_empty_delta() -> anyhow::Resul
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn build_guardian_prompt_appends_completed_call_to_delta() -> anyhow::Result<()> {
+    let (session, turn) = guardian_test_session_and_turn_with_base_url("http://localhost").await;
+    session
+        .record_conversation_items(
+            turn.as_ref(),
+            &[guardian_function_call(
+                "web",
+                "pending-call",
+                "{\"query\":\"cursor-secret\"}",
+            )],
+        )
+        .await;
+
+    let first_prompt = build_guardian_prompt_items(
+        session.as_ref(),
+        /*retry_reason*/ None,
+        guardian_exec_command_request("shell-1"),
+        GuardianPromptMode::Full,
+    )
+    .await?;
+    let first_text = guardian_prompt_text(&first_prompt.items);
+    assert!(first_text.contains("<no retained transcript entries>"));
+    assert!(!first_text.contains("cursor-secret"));
+
+    session
+        .record_conversation_items(
+            turn.as_ref(),
+            &[guardian_function_output(
+                "pending-call",
+                "search completed",
+                /*success*/ Some(true),
+            )],
+        )
+        .await;
+
+    let second_prompt = build_guardian_prompt_items(
+        session.as_ref(),
+        /*retry_reason*/ None,
+        guardian_exec_command_request("shell-2"),
+        GuardianPromptMode::Delta {
+            cursor: first_prompt.transcript_cursor,
+        },
+    )
+    .await?;
+    let second_text = guardian_prompt_text(&second_prompt.items);
+    assert!(second_text.contains(">>> TRANSCRIPT DELTA START\n"));
+    assert!(second_text.contains("cursor-secret"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn build_guardian_prompt_stale_delta_cursor_falls_back_to_full_prompt() -> anyhow::Result<()>
 {
     let (session, turn) = guardian_test_session_and_turn_with_base_url("http://localhost").await;
     seed_guardian_parent_history(&session, &turn).await;
+    let first_prompt = build_guardian_prompt_items(
+        session.as_ref(),
+        /*retry_reason*/ None,
+        guardian_exec_command_request("shell-1"),
+        GuardianPromptMode::Full,
+    )
+    .await?;
+    let mut stale_cursor: GuardianTranscriptCursor = first_prompt.transcript_cursor;
+    stale_cursor.transcript_entry_count = 99;
 
     let prompt = build_guardian_prompt_items(
         session.as_ref(),
@@ -810,10 +926,7 @@ async fn build_guardian_prompt_stale_delta_cursor_falls_back_to_full_prompt() ->
             tty: false,
         },
         GuardianPromptMode::Delta {
-            cursor: GuardianTranscriptCursor {
-                parent_history_version: 0,
-                transcript_entry_count: 99,
-            },
+            cursor: stale_cursor,
         },
     )
     .await?;
@@ -832,6 +945,13 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
 {
     let (session, turn) = guardian_test_session_and_turn_with_base_url("http://localhost").await;
     seed_guardian_parent_history(&session, &turn).await;
+    let first_prompt = build_guardian_prompt_items(
+        session.as_ref(),
+        /*retry_reason*/ None,
+        guardian_exec_command_request("shell-1"),
+        GuardianPromptMode::Full,
+    )
+    .await?;
     session
         .replace_history(
             vec![
@@ -896,10 +1016,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
             tty: false,
         },
         GuardianPromptMode::Delta {
-            cursor: GuardianTranscriptCursor {
-                parent_history_version: 0,
-                transcript_entry_count: 4,
-            },
+            cursor: first_prompt.transcript_cursor,
         },
     )
     .await?;
@@ -999,25 +1116,8 @@ fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         },
-        ResponseItem::FunctionCall {
-            id: None,
-            name: "read_file".to_string(),
-            namespace: None,
-            arguments: "{\"path\":\"README.md\"}".to_string(),
-            call_id: "call-1".to_string(),
-            encrypted_function_args: None,
-            internal_chat_message_metadata_passthrough: None,
-        },
-        ResponseItem::FunctionCallOutput {
-            id: None,
-            call_id: Some("call-1".to_string()),
-            name: None,
-            namespace: None,
-            output: codex_protocol::models::FunctionCallOutputPayload::from_text(
-                "repo is public".to_string(),
-            ),
-            internal_chat_message_metadata_passthrough: None,
-        },
+        guardian_function_call("read_file", "call-1", "{\"path\":\"README.md\"}"),
+        guardian_function_output("call-1", "repo is public", /*success*/ Some(true)),
         ResponseItem::Message {
             id: None,
             role: "assistant".to_string(),
@@ -1053,6 +1153,97 @@ fn collect_guardian_transcript_entries_includes_recent_tool_calls_and_output() {
         collect_guardian_transcript_entries(&items)[2].kind,
         GuardianTranscriptEntryKind::NodeReplToolResult(_)
     ));
+}
+
+#[test]
+fn collect_guardian_transcript_entries_redacts_failed_ambiguous_and_pending_inputs() {
+    const OMITTED: &str = "[tool call input omitted because no successful result is available]";
+    let items = vec![
+        guardian_function_call("web", "failed-function", "function-secret"),
+        guardian_function_output(
+            "failed-function",
+            "function call rejected",
+            /*success*/ Some(false),
+        ),
+        guardian_custom_tool_call("custom_web", "failed-custom", "custom-secret"),
+        guardian_custom_tool_output(
+            "failed-custom",
+            "custom call rejected",
+            /*success*/ Some(false),
+        ),
+        guardian_custom_tool_call("successful_web", "reused-call", "safe query"),
+        guardian_function_call("successful_web", "reused-call", "reused-secret"),
+        guardian_custom_tool_output("reused-call", "safe result", /*success*/ Some(true)),
+        guardian_function_call("pending_web", "pending-call", "pending-secret"),
+        guardian_function_call(
+            "duplicated_output_web",
+            "duplicate-output",
+            "duplicate-output-secret",
+        ),
+        guardian_function_output(
+            "duplicate-output",
+            "first result",
+            /*success*/ Some(true),
+        ),
+        guardian_function_output(
+            "duplicate-output",
+            "second result",
+            /*success*/ Some(true),
+        ),
+    ];
+
+    assert_eq!(
+        collect_guardian_transcript_entries(&items),
+        vec![
+            guardian_tool_entry("web", "call", OMITTED),
+            guardian_tool_entry("web", "result", "function call rejected"),
+            guardian_tool_entry("custom_web", "call", OMITTED),
+            guardian_tool_entry("custom_web", "result", "custom call rejected"),
+            guardian_tool_entry("successful_web", "call", OMITTED),
+            guardian_tool_entry("successful_web", "result", "safe result"),
+            guardian_tool_entry("duplicated_output_web", "call", "duplicate-output-secret",),
+            guardian_tool_entry("duplicated_output_web", "result", "first result"),
+            guardian_tool_entry("duplicated_output_web", "result", "second result"),
+        ]
+    );
+}
+
+#[test]
+fn collect_guardian_transcript_entries_redacts_inputs_when_success_is_unknown() {
+    const OMITTED: &str = "[tool call input omitted because no successful result is available]";
+    let failed_output = FunctionCallOutputPayload {
+        body: FunctionCallOutputBody::Text("restored failure".to_string()),
+        success: Some(false),
+    };
+    let restored_failed_output: FunctionCallOutputPayload = serde_json::from_value(
+        serde_json::to_value(failed_output).expect("failed output should serialize"),
+    )
+    .expect("failed output should deserialize");
+    assert_eq!(restored_failed_output.success, None);
+
+    let items = vec![
+        guardian_function_call("web", "restored-failure", "restored-secret"),
+        ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: Some("restored-failure".to_string()),
+            name: None,
+            namespace: None,
+            output: restored_failed_output,
+            internal_chat_message_metadata_passthrough: None,
+        },
+        guardian_custom_tool_call("custom_web", "aborted-call", "aborted-secret"),
+        guardian_custom_tool_output("aborted-call", "aborted", /*success*/ None),
+    ];
+
+    assert_eq!(
+        collect_guardian_transcript_entries(&items),
+        vec![
+            guardian_tool_entry("web", "call", OMITTED),
+            guardian_tool_entry("web", "result", "restored failure"),
+            guardian_tool_entry("custom_web", "call", OMITTED),
+            guardian_tool_entry("custom_web", "result", "aborted"),
+        ]
+    );
 }
 
 #[test]
