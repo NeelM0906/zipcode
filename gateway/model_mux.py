@@ -177,17 +177,24 @@ async def models(request: Request) -> JSONResponse:
     return JSONResponse({"object": "list", "data": combined})
 
 
+def _installer_filename(request: Request) -> str:
+    name = request.url.path.rsplit("/", maxsplit=1)[-1]
+    if name.endswith(".sha256"):
+        return f"{name.removesuffix('.sha256')}.sh"
+    return name
+
+
 @app.get("/install.sh")
 @app.get("/v1/install.sh")
 @app.get("/install/zip-code-setup.sh")
 @app.get("/v1/install/zip-code-setup.sh")
 @app.get("/install/qwen-codex-setup.sh")
 @app.get("/v1/install/qwen-codex-setup.sh")
-async def setup_script() -> FileResponse:
+async def setup_script(request: Request) -> FileResponse:
     return FileResponse(
         SETUP_SCRIPT_PATH,
         media_type="text/x-shellscript",
-        filename="install.sh",
+        filename=_installer_filename(request),
     )
 
 
@@ -197,12 +204,12 @@ async def setup_script() -> FileResponse:
 @app.get("/v1/install/zip-code-setup.sha256")
 @app.get("/install/qwen-codex-setup.sha256")
 @app.get("/v1/install/qwen-codex-setup.sha256")
-async def setup_script_sha256() -> PlainTextResponse:
+async def setup_script_sha256(request: Request) -> PlainTextResponse:
     import hashlib
 
     with open(SETUP_SCRIPT_PATH, "rb") as script:
         digest = hashlib.file_digest(script, "sha256").hexdigest()
-    return PlainTextResponse(f"{digest}  install.sh\n")
+    return PlainTextResponse(f"{digest}  {_installer_filename(request)}\n")
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
