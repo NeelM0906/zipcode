@@ -185,7 +185,7 @@ services:
       FULL_MODEL: Qwen/Qwen3.8-27B-FP8
       FULL_ALIAS: Qwen/Qwen3.8-27B-FP8
       FULL_UPSTREAM: http://127.0.0.1:8012
-      SETUP_SCRIPT_PATH: /mux/zip-code-setup.sh
+      SETUP_SCRIPT_PATH: /mux/install.sh
       ZIPCODE_AUTH_DATABASE: /var/lib/zipcode/auth.sqlite3
       ZIPCODE_JWT_SECRET: ${ZIPCODE_JWT_SECRET:?set ZIPCODE_JWT_SECRET in .env}
       ZIPCODE_GITHUB_ALLOWLIST: ${ZIPCODE_GITHUB_ALLOWLIST:-}
@@ -193,7 +193,7 @@ services:
       - ../../gateway/model_mux.py:/mux/model_mux.py:ro
       - ../../gateway/auth.py:/mux/auth.py:ro
       - ../../gateway/invitations.py:/mux/invitations.py:ro
-      - ../../client/zip-code-setup.sh:/mux/zip-code-setup.sh:ro
+      - ../../install.sh:/mux/install.sh:ro
       - ${ZIPCODE_AUTH_DATA_PATH:?set ZIPCODE_AUTH_DATA_PATH in .env}:/var/lib/zipcode
     working_dir: /mux
     entrypoint: ["python3", "-m", "uvicorn"]

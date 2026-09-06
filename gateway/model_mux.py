@@ -30,7 +30,7 @@ FULL_MODEL = os.environ.get("FULL_MODEL", "Qwen/Qwen3.8-27B-FP8")
 FULL_ALIAS = os.environ.get("FULL_ALIAS", "Qwen/Qwen3.8-27B-FP8")
 FULL_UPSTREAM = os.environ.get("FULL_UPSTREAM", "http://127.0.0.1:8012").rstrip("/")
 SETUP_SCRIPT_PATH = os.environ.get(
-    "SETUP_SCRIPT_PATH", "/mux/zip-code-setup.sh"
+    "SETUP_SCRIPT_PATH", "/mux/install.sh"
 )
 BRANDED_ROUTES = {
     FLASH_ALIAS: (FLASH_UPSTREAM, FLASH_MODEL),
@@ -177,28 +177,39 @@ async def models(request: Request) -> JSONResponse:
     return JSONResponse({"object": "list", "data": combined})
 
 
+def _installer_filename(request: Request) -> str:
+    name = request.url.path.rsplit("/", maxsplit=1)[-1]
+    if name.endswith(".sha256"):
+        return f"{name.removesuffix('.sha256')}.sh"
+    return name
+
+
+@app.get("/install.sh")
+@app.get("/v1/install.sh")
 @app.get("/install/zip-code-setup.sh")
 @app.get("/v1/install/zip-code-setup.sh")
 @app.get("/install/qwen-codex-setup.sh")
 @app.get("/v1/install/qwen-codex-setup.sh")
-async def setup_script() -> FileResponse:
+async def setup_script(request: Request) -> FileResponse:
     return FileResponse(
         SETUP_SCRIPT_PATH,
         media_type="text/x-shellscript",
-        filename="zip-code-setup.sh",
+        filename=_installer_filename(request),
     )
 
 
+@app.get("/install.sha256")
+@app.get("/v1/install.sha256")
 @app.get("/install/zip-code-setup.sha256")
 @app.get("/v1/install/zip-code-setup.sha256")
 @app.get("/install/qwen-codex-setup.sha256")
 @app.get("/v1/install/qwen-codex-setup.sha256")
-async def setup_script_sha256() -> PlainTextResponse:
+async def setup_script_sha256(request: Request) -> PlainTextResponse:
     import hashlib
 
     with open(SETUP_SCRIPT_PATH, "rb") as script:
         digest = hashlib.file_digest(script, "sha256").hexdigest()
-    return PlainTextResponse(f"{digest}  zip-code-setup.sh\n")
+    return PlainTextResponse(f"{digest}  {_installer_filename(request)}\n")
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])

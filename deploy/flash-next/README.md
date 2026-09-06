@@ -50,6 +50,19 @@ second fixed bearer credential at the edge; it would block device-login and
 token-refresh endpoints. The example in `deploy/ngrok` passes traffic through
 for origin authentication.
 
+The mux serves the release installer from `/install.sh`. After installation,
+each invited teammate authenticates with their own GitHub account:
+
+```bash
+curl -fsSL https://YOUR-ZIPCODE-HOST/install.sh | sh
+zip-code login
+zip-code
+```
+
+The former `/install/zip-code-setup.sh` and
+`/install/qwen-codex-setup.sh` URLs remain as compatibility aliases, but now
+return the same GitHub-login installer. No shared ZIPCODE API key is required.
+
 Manage access with the same container command:
 
 ```bash
