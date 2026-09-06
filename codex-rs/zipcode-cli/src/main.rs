@@ -420,9 +420,10 @@ fn ensure_config(home: &Path) -> Result<()> {
     let executable = std::env::current_exe().context("resolve ZIPCODE executable")?;
     let command = toml_string(&executable.to_string_lossy());
     let catalog = toml_string(&home.join("models.json").to_string_lossy());
+    let api = toml_string(&api_url());
     if config_path.exists() {
         let existing = std::fs::read_to_string(&config_path)?;
-        if let Some(migrated) = migrate_legacy_config(&existing, &command, &catalog) {
+        if let Some(migrated) = migrate_legacy_config(&existing, &command, &catalog, &api) {
             let backup = home.join("config.toml.pre-v0.1");
             if !backup.exists() {
                 std::fs::copy(&config_path, &backup)?;
@@ -433,7 +434,6 @@ fn ensure_config(home: &Path) -> Result<()> {
         }
         return Ok(());
     }
-    let api = toml_string(&api_url());
     let config = format!(
         r#"model = "Qwen/Qwen3.8-Flash-Next"
 model_provider = "zipcode_team"
@@ -466,9 +466,15 @@ plugins = false
     Ok(())
 }
 
-fn migrate_legacy_config(existing: &str, command: &str, catalog: &str) -> Option<String> {
+fn migrate_legacy_config(
+    existing: &str,
+    command: &str,
+    catalog: &str,
+    api: &str,
+) -> Option<String> {
     let mut in_zipcode_provider = false;
     let mut replaced_legacy_auth = false;
+    let mut replaced_legacy_endpoint = false;
     let mut lines = Vec::new();
     for line in existing.lines() {
         let trimmed = line.trim();
@@ -480,17 +486,23 @@ fn migrate_legacy_config(existing: &str, command: &str, catalog: &str) -> Option
                 "auth = {{ command = \"{command}\", args = [\"auth-token\"], refresh_interval_ms = 600000 }}"
             ));
             replaced_legacy_auth = true;
+        } else if in_zipcode_provider
+            && trimmed == r#"base_url = "https://olympustest.ngrok.pro/v1""#
+        {
+            lines.push(format!("base_url = \"{api}\""));
+            replaced_legacy_endpoint = true;
         } else {
             lines.push(line.to_string());
         }
     }
-    if !replaced_legacy_auth {
+    if !replaced_legacy_auth && !replaced_legacy_endpoint {
         return None;
     }
 
-    if !lines
-        .iter()
-        .any(|line| line.trim_start().starts_with("model_catalog_json ="))
+    if replaced_legacy_auth
+        && !lines
+            .iter()
+            .any(|line| line.trim_start().starts_with("model_catalog_json ="))
     {
         let first_table = lines
             .iter()
@@ -709,8 +721,13 @@ wire_api = "responses"
 [projects."/work"]
 trust_level = "trusted"
 "#;
-        let migrated = migrate_legacy_config(legacy, "/opt/zip-code", "/data/models.json")
-            .expect("legacy config should migrate");
+        let migrated = migrate_legacy_config(
+            legacy,
+            "/opt/zip-code",
+            "/data/models.json",
+            "https://notzipcode.ngrok.io/v1",
+        )
+        .expect("legacy config should migrate");
         assert!(!migrated.contains("env_key"));
         assert!(migrated.contains("command = \"/opt/zip-code\""));
         assert!(migrated.contains("model_catalog_json = \"/data/models.json\""));
@@ -718,8 +735,38 @@ trust_level = "trusted"
     }
 
     #[test]
+    fn migrates_retired_endpoint_without_losing_current_auth() {
+        let existing = r#"[model_providers.zipcode_team]
+base_url = "https://olympustest.ngrok.pro/v1"
+auth = { command = "zip-code", args = ["auth-token"] }
+"#;
+        let migrated = migrate_legacy_config(
+            existing,
+            "zip-code",
+            "models.json",
+            "https://notzipcode.ngrok.io/v1",
+        )
+        .expect("retired endpoint should migrate");
+        assert_eq!(
+            migrated,
+            r#"[model_providers.zipcode_team]
+base_url = "https://notzipcode.ngrok.io/v1"
+auth = { command = "zip-code", args = ["auth-token"] }
+"#
+        );
+    }
+
+    #[test]
     fn leaves_nonlegacy_config_unchanged() {
         let current = "[model_providers.zipcode_team]\nauth = { command = \"zip-code\" }\n";
-        assert!(migrate_legacy_config(current, "zip-code", "models.json").is_none());
+        assert!(
+            migrate_legacy_config(
+                current,
+                "zip-code",
+                "models.json",
+                "https://notzipcode.ngrok.io/v1"
+            )
+            .is_none()
+        );
     }
 }
