@@ -15,6 +15,7 @@ use serde::Serialize;
 use crate::catalog::SkillResourceId;
 use crate::provider::MAX_SKILL_RESOURCE_CONTENT_BYTES;
 use crate::provider::SkillReadRequest;
+use crate::render::MAX_SKILL_PROMPT_BYTES;
 use crate::render::build_alias_plan;
 use crate::state::ExecutorReadSnapshot;
 
@@ -73,7 +74,6 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
     {
         Box::pin(async move {
             let args: ReadArgs = parse_args(&call)?;
-            let response_byte_budget = call.response_byte_budget(MAX_SKILL_RESPONSE_BYTES);
             validate_handle("package", &args.package, MAX_HANDLE_BYTES)?;
             if let Some(resource) = args.resource.as_deref() {
                 validate_handle("resource", resource, MAX_HANDLE_BYTES)?;
@@ -117,6 +117,15 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
                     "skill package is not available".to_string(),
                 ));
             };
+            // Code Mode bypasses host truncation. Bound the entire serialized host
+            // page (including metadata and escaping) using the skill-prompt ceiling.
+            let max_response_bytes = if output_authority == super::SkillToolAuthoritySelector::Host
+            {
+                MAX_SKILL_PROMPT_BYTES
+            } else {
+                MAX_SKILL_RESPONSE_BYTES
+            };
+            let response_byte_budget = call.response_byte_budget(max_response_bytes);
             let authority = skill_entry.authority.clone();
             let package = skill_entry.id.clone();
             let main_prompt = skill_entry.main_prompt.clone();

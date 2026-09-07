@@ -9,6 +9,21 @@ async fn invoke(
     tool: &Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>,
     arguments: Value,
 ) -> Result<Value, FunctionCallError> {
+    invoke_from(
+        tool,
+        arguments,
+        ToolCallSource::Direct,
+        TruncationPolicy::Bytes(10_000),
+    )
+    .await
+}
+
+async fn invoke_from(
+    tool: &Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>,
+    arguments: Value,
+    source: ToolCallSource,
+    truncation_policy: TruncationPolicy,
+) -> Result<Value, FunctionCallError> {
     let payload = ToolPayload::Function {
         arguments: arguments.to_string(),
     };
@@ -19,8 +34,8 @@ async fn invoke(
             tool_name: tool.tool_name(),
             model: "gpt-test".to_string(),
             codex_turn_metadata: None,
-            truncation_policy: TruncationPolicy::Bytes(10_000),
-            source: ToolCallSource::Direct,
+            truncation_policy,
+            source,
             conversation_history: ConversationHistory::default(),
             turn_item_emitter: Arc::new(NoopTurnItemEmitter),
             environments: Vec::new(),
@@ -32,6 +47,105 @@ async fn invoke(
         .ok_or_else(|| {
             FunctionCallError::Fatal("skill tool should expose structured output".to_string())
         })
+}
+
+#[tokio::test]
+async fn host_read_pages_large_escaped_unicode_with_a_hard_response_cap() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("SKILL.md");
+    let contents = "é🦀\"\\\n".repeat(3_000);
+    std::fs::write(&path, &contents)?;
+    let package = path.to_string_lossy().into_owned();
+    let mut outcome = SkillLoadOutcome::default();
+    outcome.skills.push(SkillMetadata {
+        name: "large".to_string(),
+        description: "Large host skill".to_string(),
+        short_description: None,
+        interface: None,
+        dependencies: None,
+        policy: None,
+        path_to_skills_md: AbsolutePathBuf::try_from(path)?,
+        scope: SkillScope::User,
+        plugin_id: None,
+        remote_plugin_id: None,
+    });
+    let mut builder = ExtensionRegistryBuilder::new();
+    install_with_providers(
+        &mut builder,
+        SkillProviders::new().with_host_provider(Arc::new(HostSkillProvider::new())),
+        skills_extension_config,
+    );
+    let registry = builder.build();
+    let session_store = ExtensionData::new("session");
+    let thread_store = ExtensionData::new("thread");
+    let step_store = ExtensionData::new("turn-1");
+    step_store.insert(HostSkillsSnapshot::new(Arc::new(outcome)));
+    let config = default_config();
+    registry.thread_lifecycle_contributors()[0]
+        .on_thread_start(ThreadStartInput {
+            config: &config,
+            session_source: &SessionSource::Cli,
+            persistent_thread_state_available: true,
+            environments: &[],
+            mcp_resource_client: None,
+            extension_metrics: None,
+            session_store: &session_store,
+            thread_store: &thread_store,
+        })
+        .await;
+    let tools =
+        registry.tool_contributors()[0].tools_for_step(&session_store, &thread_store, &step_store);
+    let read = tools
+        .iter()
+        .find(|tool| tool.tool_name().name == "read")
+        .unwrap();
+    for (source, policy, limit) in [
+        (
+            ToolCallSource::Direct,
+            TruncationPolicy::Bytes(512 * 1024),
+            8_000,
+        ),
+        (
+            ToolCallSource::Direct,
+            TruncationPolicy::Bytes(1_000),
+            1_200,
+        ),
+        (
+            ToolCallSource::CodeMode {
+                cell_id: "cell".to_string(),
+                runtime_tool_call_id: "nested".to_string(),
+            },
+            TruncationPolicy::Bytes(1),
+            8_000,
+        ),
+    ] {
+        let mut cursor = Value::Null;
+        let mut reconstructed = String::new();
+        for page_index in 0..100 {
+            let page = invoke_from(
+                read,
+                json!({"package": package, "cursor": cursor}),
+                source.clone(),
+                policy,
+            )
+            .await?;
+            assert!(
+                serde_json::to_vec(&page)?.len() <= limit,
+                "response exceeded {limit} bytes"
+            );
+            let chunk = page["contents"].as_str().unwrap();
+            assert!(!chunk.is_empty());
+            reconstructed.push_str(chunk);
+            cursor = page["next_cursor"].clone();
+            if cursor.is_null() {
+                assert!(page_index > 0, "large skill should require pagination");
+                break;
+            }
+        }
+        assert_eq!(reconstructed, contents);
+        assert_eq!(cursor, Value::Null);
+    }
+    Ok(())
 }
 
 #[tokio::test]

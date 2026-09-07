@@ -64,6 +64,14 @@ rejected. Windows-normalized and logical display aliases match catalog rendering
 Host supporting files still use the normal host filesystem tools. Executor and
 orchestrator authorities keep their existing behavior.
 
+Each host `skills.read` page has an 8,000-byte serialized-response ceiling,
+including metadata and JSON escaping, even when called through Code Mode.
+Smaller direct-call output budgets still apply. Continue with `next_cursor` to
+read the whole skill; the cap does not silently discard its remaining content.
+This reuses the existing skill-prompt byte ceiling, **not** an 8,000-token budget.
+An individual page can still exceed 1,000 tokens, so this context-bearing change
+requires the additional manual review specified by the repository guidelines.
+
 The production step store now carries the admitted host snapshot before tool
 construction; this is covered by a real core request/response integration test.
 Inline catalog defaults remain unchanged until relevance-selection evaluation.
@@ -73,6 +81,10 @@ Explicit skill mentions remain resolvable when that presentation flag is off.
 
 ## Validation and release boundaries
 
+- PR review follow-up: 177 skill-extension tests and 28 Python tests pass after
+  adding the host-read response cap and zombie-aware process assertions. Both
+  new regression fixtures failed before their fixes. The Python suite now runs
+  in Linux CI; its installed-CLI fixture remains opt-in via `ZIPCODE_TEST_CORE`.
 - 180 focused Rust tests pass: 176 skill-extension tests, the core production
   discovery/read integration, a tool-free TUI recap regression, and two
   app-server orchestrator-isolation tests. Personal `~/.agents/skills` is
