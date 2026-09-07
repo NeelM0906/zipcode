@@ -50,6 +50,101 @@ async fn invoke_from(
 }
 
 #[tokio::test]
+async fn host_list_pages_large_metadata_with_a_hard_response_cap() -> TestResult {
+    let mut entries = Vec::new();
+    for index in 0..24 {
+        let package = format!("/skills/{index:02}/{}/SKILL.md", "p".repeat(2_000));
+        let mut entry = test_entry(SkillSourceKind::Host, "host", &package, &package);
+        entry.name = format!("large-{index:02}");
+        entry.description = "é\"\\\n".repeat(255);
+        entries.push(entry);
+    }
+    let expected_names = entries
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect::<Vec<_>>();
+    let mut builder = ExtensionRegistryBuilder::new();
+    install_with_providers(
+        &mut builder,
+        SkillProviders::new().with_host_provider(Arc::new(StaticSkillProvider {
+            catalog: SkillCatalog {
+                entries,
+                warnings: Vec::new(),
+            },
+            read_requests: Arc::new(Mutex::new(Vec::new())),
+            list_calls: None,
+            fail_first_list: false,
+        })),
+        skills_extension_config,
+    );
+    let registry = builder.build();
+    let session_store = ExtensionData::new("session");
+    let thread_store = ExtensionData::new("thread");
+    let step_store = ExtensionData::new("turn-1");
+    step_store.insert(HostSkillsSnapshot::new(Arc::new(
+        SkillLoadOutcome::default(),
+    )));
+    let config = default_config();
+    registry.thread_lifecycle_contributors()[0]
+        .on_thread_start(ThreadStartInput {
+            config: &config,
+            session_source: &SessionSource::Cli,
+            persistent_thread_state_available: true,
+            environments: &[],
+            mcp_resource_client: None,
+            extension_metrics: None,
+            session_store: &session_store,
+            thread_store: &thread_store,
+        })
+        .await;
+    let tools =
+        registry.tool_contributors()[0].tools_for_step(&session_store, &thread_store, &step_store);
+    let list = tools
+        .iter()
+        .find(|tool| tool.tool_name().name == "list")
+        .unwrap();
+    for source in [
+        ToolCallSource::Direct,
+        ToolCallSource::CodeMode {
+            cell_id: "cell".to_string(),
+            runtime_tool_call_id: "nested".to_string(),
+        },
+    ] {
+        let mut cursor = Value::Null;
+        let mut names = Vec::new();
+        for page_index in 0..100 {
+            let page = invoke_from(
+                list,
+                json!({"authority": {"kind": "host"}, "cursor": cursor}),
+                source.clone(),
+                TruncationPolicy::Bytes(512 * 1024),
+            )
+            .await?;
+            assert!(
+                serde_json::to_vec(&page)?.len() <= 8_000,
+                "host list page exceeded 8,000 bytes"
+            );
+            assert_eq!(page["warnings"], json!([]));
+            names.extend(
+                page["skills"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|skill| skill["name"].as_str().unwrap().to_string()),
+            );
+            cursor = page["next_cursor"].clone();
+            if cursor.is_null() {
+                assert!(page_index > 0, "large metadata should require pagination");
+                break;
+            }
+        }
+        assert_eq!(names, expected_names);
+        assert_eq!(cursor, Value::Null);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn host_read_pages_large_escaped_unicode_with_a_hard_response_cap() -> TestResult {
     let temp = tempfile::tempdir()?;
     let path = temp.path().join("SKILL.md");

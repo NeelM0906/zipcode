@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use crate::catalog::SkillCatalogEntry;
 use crate::render::MAX_SKILL_NAME_BYTES;
+use crate::render::MAX_SKILL_PROMPT_BYTES;
 use crate::render::truncate_catalog_skill_description;
 use crate::render::truncate_utf8_to_bytes;
 use crate::warnings::bounded_warnings;
@@ -88,7 +89,13 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ListTool {
                 validate_handle("query", query, MAX_QUERY_BYTES)?;
             }
             let query = args.query.map(|query| query.to_lowercase());
-            let response_byte_budget = call.response_byte_budget(MAX_SKILL_RESPONSE_BYTES);
+            let max_response_bytes = match args.authority {
+                SkillToolAuthoritySelector::Host => MAX_SKILL_PROMPT_BYTES,
+                SkillToolAuthoritySelector::Executor | SkillToolAuthoritySelector::Orchestrator => {
+                    MAX_SKILL_RESPONSE_BYTES
+                }
+            };
+            let response_byte_budget = call.response_byte_budget(max_response_bytes);
             let catalog = self.context.catalog(&call.turn_id, args.authority).await;
             let mut omitted_oversized_entry = false;
             let canonical_skills = catalog

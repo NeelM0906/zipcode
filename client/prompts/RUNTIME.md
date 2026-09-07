@@ -54,7 +54,7 @@ do not delete other user hooks or configuration.
 
 `skills.list` accepts `authority: {kind: "host"}` and an optional case-insensitive
 query of at most 256 bytes. It searches full names/descriptions before metadata
-truncation and returns at most 20 entries per page within the existing response
+truncation and returns at most 20 entries per page within the host response
 budget. Continue with the same query and returned cursor; changed queries or
 catalogs reject stale cursors. Disabled/implicit-hidden skills remain excluded.
 
@@ -64,16 +64,22 @@ rejected. Windows-normalized and logical display aliases match catalog rendering
 Host supporting files still use the normal host filesystem tools. Executor and
 orchestrator authorities keep their existing behavior.
 
-Each host `skills.read` page has an 8,000-byte serialized-response ceiling,
+Each host `skills.list` and `skills.read` page has an 8,000-byte serialized-response ceiling,
 including metadata and JSON escaping, even when called through Code Mode.
 Smaller direct-call output budgets still apply. Continue with `next_cursor` to
 read the whole skill; the cap does not silently discard its remaining content.
+Large catalog entries use smaller pages. A single entry that cannot fit still
+uses the existing explicit omission warning; executor/orchestrator caps are unchanged.
 This reuses the existing skill-prompt byte ceiling, **not** an 8,000-token budget.
 An individual page can still exceed 1,000 tokens, so this context-bearing change
 requires the additional manual review specified by the repository guidelines.
 
 The production step store now carries the admitted host snapshot before tool
 construction; this is covered by a real core request/response integration test.
+Two further real-agent tests require the Code Mode host executable and measure
+every serialized list/read page under a 512 KiB model budget. They check complete
+catalog pagination and exact reconstruction of a large Unicode/escaped skill
+file through the production router, without manufacturing a `ToolCallSource`.
 Inline catalog defaults remain unchanged until relevance-selection evaluation.
 Host discovery tools respect the existing `include_instructions` opt-out, so
 tool-free auxiliary requests do not accidentally acquire discovery tools.
@@ -81,6 +87,13 @@ Explicit skill mentions remain resolvable when that presentation flag is off.
 
 ## Validation and release boundaries
 
+- Latest host-page follow-up: all 178 skill-extension tests and all three core
+  discovery integration tests pass. The new real Code Mode list regression
+  reproduced a 26,109-byte page before the cap; afterward both list and read
+  remain at most 8,000 serialized bytes per page with complete pagination.
+  Core tests require a built `codex-code-mode-host` executable (build it with
+  `cargo build -p codex-code-mode-host` before a scoped Cargo-based core run).
+  The full workspace suite was not repeated for this follow-up.
 - PR review follow-up: 177 skill-extension tests and 28 Python tests pass after
   adding the host-read response cap and zombie-aware process assertions. Both
   new regression fixtures failed before their fixes. The Python suite now runs
