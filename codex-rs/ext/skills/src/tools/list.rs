@@ -26,10 +26,12 @@ use super::serialized_len;
 use super::skill_function_tool;
 use super::skill_json_output;
 use super::skill_tool_name;
+use super::validate_handle;
 use super::value_fingerprint;
 
 const TOOL_NAME: &str = "list";
 const MAX_SKILLS_PER_PAGE: usize = 20;
+const MAX_QUERY_BYTES: usize = 256;
 const OVERSIZED_ENTRY_WARNING: &str =
     "Some skills were omitted because their metadata is too large.";
 
@@ -37,6 +39,7 @@ const OVERSIZED_ENTRY_WARNING: &str =
 #[serde(deny_unknown_fields)]
 struct ListArgs {
     authority: SkillToolAuthoritySelector,
+    query: Option<String>,
     cursor: Option<String>,
 }
 
@@ -71,7 +74,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ListTool {
     fn spec(&self) -> ToolSpec {
         skill_function_tool::<ListArgs, ListResponse>(
             TOOL_NAME,
-            "List skills owned by the requested authority. Returns each skill's authority, package, and main_resource. Pass the package to skills.read, and pass next_cursor back as cursor to continue.",
+            "List skills owned by the requested authority: host, executor, or orchestrator. Optionally filter names and descriptions with a case-insensitive query (at most 256 bytes). Searches the full catalog, including skills omitted from inline instructions. Returns each skill's authority, package, and main_resource. Pass the package to skills.read, and pass next_cursor back as cursor with the same query to continue.",
         )
     }
 
@@ -81,6 +84,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ListTool {
     {
         Box::pin(async move {
             let args: ListArgs = parse_args(&call)?;
+            if let Some(query) = &args.query {
+                validate_handle("query", query, MAX_QUERY_BYTES)?;
+            }
+            let query = args.query.map(|query| query.to_lowercase());
             let response_byte_budget = call.response_byte_budget(MAX_SKILL_RESPONSE_BYTES);
             let catalog = self.context.catalog(&call.turn_id, args.authority).await;
             let mut omitted_oversized_entry = false;
@@ -89,6 +96,12 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ListTool {
                 .into_iter()
                 .filter(|entry| {
                     entry.is_model_visible() && args.authority.matches(&entry.authority)
+                })
+                .filter(|entry| {
+                    query.as_ref().is_none_or(|query| {
+                        entry.name.to_lowercase().contains(query)
+                            || entry.description.to_lowercase().contains(query)
+                    })
                 })
                 .filter_map(|entry| {
                     let listed = listed_skill(entry);
@@ -116,13 +129,24 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ListTool {
                 },
                 None => (None, None),
             };
-            let start = parse_pagination_cursor(cursor, &canonical_skills, "skills.list")?;
+            // Keep unfiltered cursors compatible; filtered cursors also bind the query.
+            let (start, cursor_fingerprint) = if let Some(query) = &query {
+                let identity = (query, &canonical_skills);
+                (
+                    parse_pagination_cursor(cursor, &identity, "skills.list")?,
+                    value_fingerprint(&identity),
+                )
+            } else {
+                (
+                    parse_pagination_cursor(cursor, &canonical_skills, "skills.list")?,
+                    value_fingerprint(&canonical_skills),
+                )
+            };
             if start > canonical_skills.len() {
                 return Err(FunctionCallError::RespondToModel(
                     "skills.list cursor is invalid".to_string(),
                 ));
             }
-            let cursor_fingerprint = value_fingerprint(&canonical_skills);
             let cursor_at =
                 |offset| format!("{cursor_fingerprint:016x}:{offset}:{response_byte_budget}");
             let mut skills = Vec::with_capacity(canonical_skills.len().saturating_sub(start));

@@ -63,7 +63,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
     fn spec(&self) -> ToolSpec {
         skill_function_tool::<ReadArgs, ReadResponse>(
             TOOL_NAME,
-            "Read one page from a skill. Pass its provided package directly; root aliases are resolved automatically. Omit resource to read SKILL.md; to read another file, use the same package and pass the file's complete skill:// identifier as resource. For executor-backed skills, skill_root is the skill's absolute directory in the executor filesystem and can be used to locate bundled scripts. If the package is not provided, use skills.list to find it. Pass next_cursor back as cursor to continue the same snapshot while it is cached; omit cursor to read again.",
+            "Read one page from a skill. Pass its provided package directly; root aliases are resolved automatically. Omit resource to read SKILL.md. Host skills support only their listed main_resource; read their other files through the host filesystem. For executor or orchestrator skills, use the same package and pass another file's complete skill:// identifier as resource. For executor-backed skills, skill_root is the skill's absolute directory in the executor filesystem and can be used to locate bundled scripts. If the package is not provided, use skills.list to find it. Pass next_cursor back as cursor to continue the same snapshot while it is cached; omit cursor to read again.",
         )
     }
 
@@ -83,6 +83,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
             for selector in [
                 super::SkillToolAuthoritySelector::Orchestrator,
                 super::SkillToolAuthoritySelector::Executor,
+                super::SkillToolAuthoritySelector::Host,
             ] {
                 let catalog = self.context.catalog(&call.turn_id, selector).await;
                 let alias_plan = build_alias_plan(
@@ -93,11 +94,16 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
                         .collect::<Vec<_>>(),
                 );
                 if let Some(entry) = catalog.entries.into_iter().find(|entry| {
+                    let locator = if selector == super::SkillToolAuthoritySelector::Host {
+                        entry.rendered_path()
+                    } else {
+                        &entry.id.0
+                    };
                     entry.enabled
                         && (entry.id.0 == args.package
                             || alias_plan
                                 .as_ref()
-                                .and_then(|plan| plan.shorten(&entry.id.0))
+                                .and_then(|plan| plan.shorten(locator))
                                 .is_some_and(|alias| alias == args.package))
                         && SkillToolAuthority::from_authority(&entry.authority)
                             .is_some_and(|authority| authority.selector() == selector)
@@ -114,6 +120,16 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
             let authority = skill_entry.authority.clone();
             let package = skill_entry.id.clone();
             let main_prompt = skill_entry.main_prompt.clone();
+            if output_authority == super::SkillToolAuthoritySelector::Host
+                && args
+                    .resource
+                    .as_deref()
+                    .is_some_and(|resource| resource != main_prompt.as_str())
+            {
+                return Err(FunctionCallError::RespondToModel(
+                    "host skills.read supports only the selected skill's main_resource".to_string(),
+                ));
+            }
             let requested_resource = match args.resource {
                 None => main_prompt.clone(),
                 Some(resource) if resource == main_prompt.as_str() => main_prompt.clone(),
@@ -193,7 +209,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
                                 resource: requested_resource.clone(),
                                 resolved_executor_roots,
                                 sandbox: sandbox.clone(),
-                                host_snapshot: None,
+                                host_snapshot: self.context.host_snapshot.clone(),
                                 mcp_resources: self.context.mcp_resources.clone(),
                             },
                         )

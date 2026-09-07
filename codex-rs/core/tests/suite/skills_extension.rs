@@ -86,6 +86,9 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path_regex;
 
+#[path = "skills_extension/discovery_tests.rs"]
+mod discovery_tests;
+
 struct StaticSkillProvider {
     catalog: SkillCatalog,
     main_prompt_contents: Option<String>,

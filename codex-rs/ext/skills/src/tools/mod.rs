@@ -35,6 +35,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::OnceCell;
 
+use crate::HostSkillsSnapshot;
 use crate::catalog::SkillAuthority;
 use crate::catalog::SkillCatalog;
 use crate::catalog::SkillCatalogEntry;
@@ -55,21 +56,32 @@ const SKILLS_NAMESPACE: &str = "skills";
 const MAX_HANDLE_BYTES: usize = 2_048;
 const MAX_SKILL_RESPONSE_BYTES: usize = 512 * 1024;
 
+pub(crate) struct SkillToolSnapshots {
+    pub(crate) host_snapshot: Option<Arc<HostSkillsSnapshot>>,
+    pub(crate) executor_query: Option<SkillListQuery>,
+}
+
 pub(crate) fn skill_tools(
     providers: SkillProviders,
     session_store: &ExtensionData,
     thread_store: &ExtensionData,
-    executor_query: Option<SkillListQuery>,
+    snapshots: SkillToolSnapshots,
     selected_plugins: Option<Arc<SelectedPluginSnapshot>>,
     sandbox_contexts: Option<Arc<HashMap<String, FileSystemSandboxContext>>>,
     shadow_selection: Arc<ShadowSelectionExperiment>,
 ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
+    let SkillToolSnapshots {
+        host_snapshot,
+        executor_query,
+    } = snapshots;
     let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
         return Vec::new();
     };
     let orchestrator_available =
         providers.has_orchestrator_provider() && thread_state.orchestrator_skills_enabled();
-    if !orchestrator_available && executor_query.is_none() {
+    let host_snapshot = host_snapshot
+        .filter(|_| providers.has_host_provider() && thread_state.config().include_instructions);
+    if !orchestrator_available && executor_query.is_none() && host_snapshot.is_none() {
         return Vec::new();
     }
     let mcp_resources = session_store
@@ -82,6 +94,7 @@ pub(crate) fn skill_tools(
         thread_state,
         analytics,
         orchestrator_available,
+        host_snapshot,
         executor_query,
         selected_plugins,
         sandbox_contexts,
@@ -196,6 +209,7 @@ struct SkillToolContext {
     thread_state: Arc<SkillsThreadState>,
     analytics: Option<SkillAnalytics>,
     orchestrator_available: bool,
+    host_snapshot: Option<Arc<HostSkillsSnapshot>>,
     executor_query: Option<SkillListQuery>,
     selected_plugins: Option<Arc<SelectedPluginSnapshot>>,
     sandbox_contexts: Option<Arc<HashMap<String, FileSystemSandboxContext>>>,
@@ -206,6 +220,24 @@ struct SkillToolContext {
 impl SkillToolContext {
     async fn catalog(&self, turn_id: &str, authority: SkillToolAuthoritySelector) -> SkillCatalog {
         match authority {
+            SkillToolAuthoritySelector::Host => {
+                let Some(host_snapshot) = self.host_snapshot.clone() else {
+                    return SkillCatalog::default();
+                };
+                self.providers
+                    .list_host_for_turn(SkillListQuery {
+                        turn_id: turn_id.to_string(),
+                        executor_roots: Vec::new(),
+                        resolved_executor_roots: Vec::new(),
+                        host_snapshot: Some(host_snapshot),
+                        include_host_skills: true,
+                        include_bundled_skills: false,
+                        include_orchestrator_skills: false,
+                        mcp_resources: None,
+                        executor_capability_discovery: None,
+                    })
+                    .await
+            }
             SkillToolAuthoritySelector::Orchestrator => {
                 if !self.orchestrator_available {
                     return SkillCatalog::default();
@@ -249,6 +281,7 @@ impl SkillToolContext {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum SkillToolAuthoritySelector {
+    Host,
     Orchestrator,
     Executor,
 }
@@ -256,6 +289,7 @@ enum SkillToolAuthoritySelector {
 impl SkillToolAuthoritySelector {
     fn matches(self, authority: &SkillAuthority) -> bool {
         match self {
+            Self::Host => authority.kind == SkillSourceKind::Host,
             Self::Orchestrator => authority.kind == SkillSourceKind::Orchestrator,
             Self::Executor => authority.kind == SkillSourceKind::Executor,
         }
@@ -265,6 +299,7 @@ impl SkillToolAuthoritySelector {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum SkillToolAuthority {
+    Host,
     Orchestrator,
     Executor { id: String },
 }
@@ -272,6 +307,7 @@ pub(crate) enum SkillToolAuthority {
 impl SkillToolAuthority {
     fn selector(&self) -> SkillToolAuthoritySelector {
         match self {
+            Self::Host => SkillToolAuthoritySelector::Host,
             Self::Orchestrator => SkillToolAuthoritySelector::Orchestrator,
             Self::Executor { .. } => SkillToolAuthoritySelector::Executor,
         }
@@ -279,6 +315,7 @@ impl SkillToolAuthority {
 
     pub(crate) fn from_authority(authority: &SkillAuthority) -> Option<Self> {
         match &authority.kind {
+            SkillSourceKind::Host if authority.id == "host" => Some(Self::Host),
             SkillSourceKind::Orchestrator if authority.id == CODEX_APPS_MCP_SERVER_NAME => {
                 Some(Self::Orchestrator)
             }
@@ -383,6 +420,6 @@ fn skill_json_output<T: Serialize>(
     let output = JsonToolOutput::new(value);
     Ok(match authority {
         SkillToolAuthoritySelector::Orchestrator => Box::new(output.with_external_context()),
-        SkillToolAuthoritySelector::Executor => Box::new(output),
+        SkillToolAuthoritySelector::Host | SkillToolAuthoritySelector::Executor => Box::new(output),
     })
 }

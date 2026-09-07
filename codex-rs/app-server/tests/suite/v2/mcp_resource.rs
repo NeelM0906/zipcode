@@ -504,13 +504,31 @@ async fn local_executor_does_not_expose_orchestrator_skills() -> Result<()> {
     let ThreadStartResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(thread_start_id)).await??;
 
-    let response_mock = responses::mount_sse_once(
+    let response_mock = responses::mount_sse_sequence(
         &responses_server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-no-orchestrator-skill"),
-            responses::ev_assistant_message("msg-no-orchestrator-skill", "Done"),
-            responses::ev_completed("resp-no-orchestrator-skill"),
-        ]),
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-check-orchestrator-skill"),
+                responses::ev_function_call_with_namespace(
+                    SKILLS_LIST_CALL_ID,
+                    "skills",
+                    "list",
+                    &json!({"authority": {"kind": "orchestrator"}}).to_string(),
+                ),
+                responses::ev_function_call_with_namespace(
+                    SKILLS_READ_CALL_ID,
+                    "skills",
+                    "read",
+                    &json!({"package": SKILL_RESOURCE_URI}).to_string(),
+                ),
+                responses::ev_completed("resp-check-orchestrator-skill"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-no-orchestrator-skill"),
+                responses::ev_assistant_message("msg-no-orchestrator-skill", "Done"),
+                responses::ev_completed("resp-no-orchestrator-skill"),
+            ]),
+        ],
     )
     .await;
     let turn_start_id = mcp
@@ -531,9 +549,24 @@ async fn local_executor_does_not_expose_orchestrator_skills() -> Result<()> {
     )
     .await??;
 
-    let request = response_mock.single_request();
-    assert!(request.tool_by_name("skills", "list").is_none());
-    assert!(request.tool_by_name("skills", "read").is_none());
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
+    let request = &requests[0];
+    assert!(request.tool_by_name("skills", "list").is_some());
+    assert!(request.tool_by_name("skills", "read").is_some());
+    let list_output = requests[1]
+        .function_call_output_text(SKILLS_LIST_CALL_ID)
+        .ok_or_else(|| anyhow::anyhow!("missing skills.list output"))?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&list_output)?,
+        json!({"skills": [], "warnings": [], "next_cursor": null})
+    );
+    assert_eq!(
+        requests[1]
+            .function_call_output_text(SKILLS_READ_CALL_ID)
+            .as_deref(),
+        Some("skill package is not available")
+    );
     assert!(
         request
             .message_input_texts("developer")
@@ -553,7 +586,7 @@ async fn local_executor_does_not_expose_orchestrator_skills() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn disabled_orchestrator_skills_do_not_expose_skills_namespace() -> Result<()> {
+async fn disabled_orchestrator_skills_remain_unavailable_through_shared_namespace() -> Result<()> {
     let responses_server = responses::start_mock_server().await;
     let (apps_server_url, apps_server_calls, apps_server_handle) =
         start_resource_apps_mcp_server().await?;
@@ -576,13 +609,31 @@ enabled = false
         })
         .await?;
 
-    let response_mock = responses::mount_sse_once(
+    let response_mock = responses::mount_sse_sequence(
         &responses_server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-disabled-orchestrator-skills"),
-            responses::ev_assistant_message("msg-disabled-orchestrator-skills", "Done"),
-            responses::ev_completed("resp-disabled-orchestrator-skills"),
-        ]),
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-check-disabled-orchestrator-skills"),
+                responses::ev_function_call_with_namespace(
+                    SKILLS_LIST_CALL_ID,
+                    "skills",
+                    "list",
+                    &json!({"authority": {"kind": "orchestrator"}}).to_string(),
+                ),
+                responses::ev_function_call_with_namespace(
+                    SKILLS_READ_CALL_ID,
+                    "skills",
+                    "read",
+                    &json!({"package": SKILL_RESOURCE_URI}).to_string(),
+                ),
+                responses::ev_completed("resp-check-disabled-orchestrator-skills"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("resp-disabled-orchestrator-skills"),
+                responses::ev_assistant_message("msg-disabled-orchestrator-skills", "Done"),
+                responses::ev_completed("resp-disabled-orchestrator-skills"),
+            ]),
+        ],
     )
     .await;
     let turn_start_id = mcp
@@ -603,9 +654,24 @@ enabled = false
     )
     .await??;
 
-    let request = response_mock.single_request();
-    assert!(request.tool_by_name("skills", "list").is_none());
-    assert!(request.tool_by_name("skills", "read").is_none());
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
+    let request = &requests[0];
+    assert!(request.tool_by_name("skills", "list").is_some());
+    assert!(request.tool_by_name("skills", "read").is_some());
+    let list_output = requests[1]
+        .function_call_output_text(SKILLS_LIST_CALL_ID)
+        .ok_or_else(|| anyhow::anyhow!("missing skills.list output"))?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&list_output)?,
+        json!({"skills": [], "warnings": [], "next_cursor": null})
+    );
+    assert_eq!(
+        requests[1]
+            .function_call_output_text(SKILLS_READ_CALL_ID)
+            .as_deref(),
+        Some("skill package is not available")
+    );
     assert!(
         request
             .message_input_texts("developer")
