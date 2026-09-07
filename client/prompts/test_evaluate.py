@@ -98,24 +98,50 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
                 [sys.executable, "-c", command], Path(directory), 5
             )
             child = int(result[1].strip())
-            alive = True
-            try:
-                for _ in range(20):
-                    try:
-                        os.kill(child, 0)
-                    except ProcessLookupError:
-                        alive = False
-                        break
-                    await asyncio.sleep(0.05)
-                self.assertFalse(
-                    alive, "owned background child survived parent completion"
+            await self.assert_process_stopped(child)
+
+    async def test_unreaped_child_is_already_stopped(self):
+        # Keep ownership so PID 1 cannot reap the child before this assertion.
+        with subprocess.Popen([sys.executable, "-c", "pass"]) as child:
+            for _ in range(100):
+                status = subprocess.run(
+                    ["ps", "-o", "stat=", "-p", str(child.pid)],
+                    capture_output=True, text=True, check=True, timeout=2,
+                ).stdout.strip()
+                if status.startswith("Z"):
+                    break
+                await asyncio.sleep(0.01)
+            self.assertTrue(status.startswith("Z"), "fixture did not become a zombie")
+            await self.assert_process_stopped(child.pid)
+
+    async def assert_process_stopped(self, child):
+        alive = True
+        try:
+            for _ in range(20):
+                try:
+                    os.kill(child, 0)
+                except ProcessLookupError:
+                    alive = False
+                    break
+                status = subprocess.run(
+                    ["ps", "-o", "stat=", "-p", str(child)],
+                    capture_output=True, text=True, timeout=2,
                 )
-            finally:
-                if alive:
-                    try:
-                        os.kill(child, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                if status.returncode == 1 and not status.stdout.strip():
+                    alive = False  # Reaped between the PID and state checks.
+                    break
+                status.check_returncode()
+                if status.stdout.strip().startswith("Z"):
+                    alive = False  # Terminated, even if PID 1 has not reaped it.
+                    break
+                await asyncio.sleep(0.05)
+            self.assertFalse(alive, "owned background child survived parent completion")
+        finally:
+            if alive:
+                try:
+                    os.kill(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     async def test_excess_output_stops_and_drains_without_hanging(self):
         with tempfile.TemporaryDirectory() as directory:
