@@ -1,0 +1,155 @@
+{
+  "candidate_sha256": "c4c0f6d493214f21b74137780d159fd9306277082c7c9f1e49229a6fd3252ee6",
+  "token_counts": {
+    "flash": 501,
+    "27b": 501,
+    "installed_baseline_flash": 3674
+  },
+  "promotion": "held",
+  "reason": [
+    "27B feature fails mixed-hashability equality",
+    "Flash UI agent exceeded 90 seconds; no completed verification report",
+    "No claim of consistent total-token reduction"
+  ],
+  "independent_browser_check": "Flash candidate pointer, Enter and Space passed; separate from agent completion",
+  "runs": [
+    {
+      "model": "flash",
+      "case": "feature",
+      "independent_check": true,
+      "agent_turn_completed": true,
+      "stopped": null,
+      "seconds": 48.58,
+      "usage": {
+        "reasoning_output_tokens": 3944,
+        "output_tokens": 7056,
+        "cached_input_tokens": 78912,
+        "cache_write_input_tokens": 0,
+        "input_tokens": 81553
+      },
+      "command_count": 8
+    },
+    {
+      "model": "flash",
+      "case": "ui",
+      "independent_check": null,
+      "agent_turn_completed": false,
+      "stopped": "timeout",
+      "seconds": 90.01,
+      "usage": null,
+      "command_count": 15
+    },
+    {
+      "model": "flash",
+      "case": "bug",
+      "independent_check": true,
+      "agent_turn_completed": true,
+      "stopped": null,
+      "seconds": 11.91,
+      "usage": {
+        "output_tokens": 1248,
+        "cached_input_tokens": 48832,
+        "cache_write_input_tokens": 0,
+        "reasoning_output_tokens": 424,
+        "input_tokens": 51794
+      },
+      "command_count": 6
+    },
+    {
+      "model": "flash",
+      "case": "install",
+      "independent_check": true,
+      "agent_turn_completed": true,
+      "stopped": null,
+      "seconds": 34.32,
+      "usage": {
+        "output_tokens": 3919,
+        "cached_input_tokens": 63616,
+        "cache_write_input_tokens": 0,
+        "reasoning_output_tokens": 2302,
+        "input_tokens": 65751
+      },
+      "command_count": 18
+    },
+    {
+      "model": "flash",
+      "case": "blocked",
+      "independent_check": true,
+      "agent_turn_completed": true,
+      "stopped": null,
+      "seconds": 25.86,
+      "usage": {
+        "output_tokens": 2782,
+        "cached_input_tokens": 77440,
+        "cache_write_input_tokens": 0,
+        "reasoning_output_tokens": 1405,
+        "input_tokens": 85141
+      },
+      "command_count": 14
+    },
+    {
+      "model": "27b",
+      "case": "bug",
+      "independent_check": true,
+      "agent_turn_completed": true,
+      "stopped": null,
+      "seconds": 22.99,
+      "usage": {
+        "input_tokens": 79521,
+        "reasoning_output_tokens": 816,
+        "cache_write_input_tokens": 0,
+        "cached_input_tokens": 75520,
+        "output_tokens": 1704
+      },
+      "command_count": 6
+    },
+    {
+      "model": "27b",
+      "case": "feature",
+      "independent_check": false,
+      "agent_turn_completed": true,
+      "stopped": null,
+      "seconds": 15.77,
+      "usage": {
+        "input_tokens": 47783,
+        "reasoning_output_tokens": 423,
+        "cache_write_input_tokens": 0,
+        "cached_input_tokens": 45376,
+        "output_tokens": 1287
+      },
+      "command_count": 5
+    },
+    {
+      "model": "27b",
+      "case": "install",
+      "independent_check": true,
+      "agent_turn_completed": true,
+      "stopped": null,
+      "seconds": 27.11,
+      "usage": {
+        "input_tokens": 52126,
+        "reasoning_output_tokens": 1297,
+        "cache_write_input_tokens": 0,
+        "cached_input_tokens": 49920,
+        "output_tokens": 2240
+      },
+      "command_count": 4
+    },
+    {
+      "model": "27b",
+      "case": "blocked",
+      "independent_check": true,
+      "agent_turn_completed": true,
+      "stopped": null,
+      "seconds": 20.04,
+      "usage": {
+        "input_tokens": 49950,
+        "reasoning_output_tokens": 880,
+        "cache_write_input_tokens": 0,
+        "cached_input_tokens": 48000,
+        "output_tokens": 1576
+      },
+      "command_count": 4
+    }
+  ]
+}
