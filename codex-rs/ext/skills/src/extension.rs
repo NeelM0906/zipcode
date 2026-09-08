@@ -71,6 +71,7 @@ use crate::state::SkillsTurnState;
 use crate::telemetry::SkillTelemetry;
 use crate::tools::SkillAnalytics;
 use crate::tools::SkillToolAuthority;
+use crate::tools::SkillToolSnapshots;
 use crate::tools::skill_tools;
 use crate::warnings::bounded_warnings;
 use crate::world_state_catalogs::CatalogContext;
@@ -280,6 +281,7 @@ where
         self.build_skill_tools(
             session_store,
             thread_store,
+            /*host_snapshot*/ None,
             /*executor_query*/ None,
             /*selected_plugins*/ None,
             /*sandbox_contexts*/ None,
@@ -315,6 +317,7 @@ where
         self.build_skill_tools(
             session_store,
             thread_store,
+            step_store.get::<HostSkillsSnapshot>(),
             executor_query,
             step_store.get::<SelectedPluginSnapshot>(),
             step_store.get::<HashMap<String, FileSystemSandboxContext>>(),
@@ -487,7 +490,8 @@ where
                             )
                             .0,
                             contents,
-                            resource_access: (!entry.prompt_visible)
+                            resource_access: (!entry.prompt_visible
+                                && entry.authority.kind != SkillSourceKind::Host)
                                 .then_some(&entry.authority)
                                 .and_then(SkillToolAuthority::from_authority)
                                 .map(|authority| SkillResourceAccess {
@@ -560,6 +564,7 @@ impl<C> SkillsExtension<C> {
         &self,
         session_store: &ExtensionData,
         thread_store: &ExtensionData,
+        host_snapshot: Option<Arc<HostSkillsSnapshot>>,
         executor_query: Option<SkillListQuery>,
         selected_plugins: Option<Arc<SelectedPluginSnapshot>>,
         sandbox_contexts: Option<Arc<HashMap<String, FileSystemSandboxContext>>>,
@@ -568,7 +573,10 @@ impl<C> SkillsExtension<C> {
             self.providers.clone(),
             session_store,
             thread_store,
-            executor_query,
+            SkillToolSnapshots {
+                host_snapshot,
+                executor_query,
+            },
             selected_plugins,
             sandbox_contexts,
             Arc::clone(&self.shadow_selection),

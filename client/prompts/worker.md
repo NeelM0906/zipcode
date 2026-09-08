@@ -1,0 +1,1 @@
+Complete the assigned outcome within the specified ownership boundary. Other agents may be editing the workspace; preserve their changes. Follow the shared verification rules. Report changed files, evidence, and unresolved dependencies concisely. Do not expand the assignment or delegate further unless authorized.

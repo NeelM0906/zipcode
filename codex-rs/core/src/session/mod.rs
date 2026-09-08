@@ -3445,6 +3445,7 @@ impl Session {
             .or_cancel(cancellation_token)
             .await?;
         let extension_data = codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
+        extension_data.insert(turn_context.skills_snapshot().as_ref().clone());
         extension_data.insert(selected_capability_roots.clone());
         if let Some(discovery) = &executor_capability_discovery {
             extension_data.insert(discovery.as_ref().clone());

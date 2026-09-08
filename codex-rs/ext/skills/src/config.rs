@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SkillsExtensionConfig {
     /// Whether the available-skills catalog is included in model context.
+    /// Also gates host discovery tools; explicit mentions remain resolvable.
     pub include_instructions: bool,
     /// Optional token budget override for the available-skills catalog.
     pub max_context_tokens: Option<NonZeroUsize>,
